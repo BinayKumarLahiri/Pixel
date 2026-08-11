@@ -3,6 +3,12 @@ TARGET = ../../build/test_app/test_app
 
 OBJS = main.o
 
+
+# STB-style amalgamated header
+PIXEL_HEADER = ../../dist/pixel.h
+# STB-style test executable
+STB_TARGET = ../../build/test_app/test_app
+
 # 2. Update the library path to point to the new 'pixel' directory
 LIB_OBJS = ../../build/pixel/*.o
 
@@ -14,6 +20,11 @@ $(TARGET): $(OBJS)
 
 main.o: main.cpp
 	$(CXX) $(CXXFLAGS) -c main.cpp -o main.o
+
+
+stb: main.cpp
+	@mkdir -p $(dir $(STB_TARGET))
+	$(CXX) $(CXXFLAGS) -DPIXEL_H_IMPLEMENTATION main.cpp -o $(STB_TARGET)
 
 clean:
 	# 3. ONLY delete local objects here!

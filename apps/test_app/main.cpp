@@ -1,4 +1,6 @@
 #include "../../src/pixel.h"
+// #define PIXEL_H_IMPLEMENTATION
+// #include "../../dist/pixel.h"
 #include <cstdint>
 #include <iostream>
 
@@ -95,14 +97,14 @@ int main() {
     scene_instances[0].transform.scale    = 1.0f;                     // Unit scale
 
     scene_instances[1].mesh = &cube_mesh;
-    scene_instances[1].transform.position = (Vec3){0.8f,-0.8f, -3.5f}; // 2.5 units away
-    scene_instances[1].transform.rotation = (Vec3){-0.5f, 0.4f, 0.0f}; // Rotated slightly
-    scene_instances[1].transform.scale    = 0.6f;                     // Unit scale
+    scene_instances[1].transform.position = (Vec3){0.8f,-0.8f, -3.5f};
+    scene_instances[1].transform.rotation = (Vec3){-0.5f, 0.4f, 0.0f};
+    scene_instances[1].transform.scale    = 0.6f;
 
     scene_instances[2].mesh = &cube_mesh;
     scene_instances[2].transform.position = (Vec3){0.8f,0.8f, -3.5f}; // 2.5 units away
-    scene_instances[2].transform.rotation = (Vec3){0.0f, 0.4f, 0.0f}; // Rotated slightly
-    scene_instances[2].transform.scale    = 1.0f;                     // Unit scale
+    scene_instances[2].transform.rotation = (Vec3){0.0f, 0.4f, 0.0f};
+    scene_instances[2].transform.scale    = 1.0f;
 
     // 4. Setup Camera View Matrix
     Mat4 view_matrix = Pixel_Mat4Identity();
