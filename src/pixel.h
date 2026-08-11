@@ -141,7 +141,8 @@ typedef struct {
 // -----------------------------------------------------------------
 // Initialization and Destroying methods
 // -----------------------------------------------------------------
-PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t height);
+PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width,
+                         uint32_t height);
 void Pixel_Destroy(PixelContext *ctx);
 void Pixel_SwapBuffers(PixelContext *ctx);
 void Pixel_SetDrawMode(PixelContext *ctx, DrawMode draw_mode);
@@ -195,6 +196,51 @@ void Pixel_DrawTriangleFilled(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color);
 void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point2,
                                Vec3 point3, Color color);
+void Pixel_DrawTriangleDepthColor(PixelContext *ctx, int x0, int y0, int x1, int y1,
+                              int x2, int y2, Color color0, Color color1,
+                              Color color2, float z0, float z1, float z2);
+
+// -----------------------------------------------------------------
+// 3D Rendering Related stuff (Vertex, Mesh, )
+// -----------------------------------------------------------------
+
+typedef struct {
+  Vec3 coordinate;
+  Vec3 normal;
+  Color color;
+  float u, v;
+} PixelVertex;
+
+typedef struct {
+  int vertices[3];
+  uint32_t color;
+} PixelTriangle;
+
+typedef struct {
+  PixelVertex *vertices;
+  PixelTriangle *triangles;
+  int vertex_count;
+  int triangle_count;
+} PixelMesh;
+
+typedef struct {
+  Vec3 position;
+  Vec3 rotation;
+  float scale;
+} PixelTransform;
+
+typedef struct {
+  PixelMesh *mesh;
+  PixelTransform transform;
+} PixelInstance;
+
+Mat4 Pixel_ComputeMVP(PixelTransform transform, Mat4 view_matrix,
+                      Mat4 projection_matrix);
+void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh,
+                    PixelTransform transform, Mat4 view_matrix,
+                    Mat4 projection_matrix);
+void Pixel_RenderScene(PixelContext *ctx, const PixelInstance *scene, int instance_count, Mat4 view,
+                       Mat4 projection);
 
 #ifdef __cplusplus
 }
