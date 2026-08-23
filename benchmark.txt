@@ -1,0 +1,22 @@
+
+
+
+[DrawMode: PIXEL_RENDER]
+
+[Geometry Data]
+[Total Vertices Processed]: 0
+[Total Triangle Contained]: 0
+[Total Triangle Drawn]: 0
+
+[Timing Data]
+1. Scene Rendering: 0.000000
+2. Mesh Rendering: 0.000000
+3. Light Transformation: 0.000000
+4. OutVertex Calculation: 0.000000
+5. Triangle Rendering: 0.000000
+	5.1. Pixel Tested: 0
+	5.2. Pixel Inside: 0
+	5.3. Pixel Depth Failed: 0
+	5.4. Pixel Written: 0
+[Pixel] Saving the Pixel Buffer into the image file : ./images/Lighting_Test.bmp
+[Pixel] File Save complete.Lighting test scene saved to ./images/Lighting_Test.bmp[cite: 1]

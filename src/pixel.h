@@ -2,9 +2,18 @@
 #define PIXEL_H
 
 #include <cstdint>
+#include <time.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+
+typedef struct {
+    struct timespec start_time;
+} PixelTimer;
+
+PixelTimer Pixel_TimerStart(void);
+float Pixel_TimerElapsedMs(PixelTimer* timer);
 
 // -----------------------------------------------------------------
 // Some Helper Methods useful for testing the code or building it
@@ -23,6 +32,11 @@ void Pixel_CreateDirectories(const char *path);
 float Pixel_Max(float val1, float val2);
 float Pixel_Min(float val1, float val2);
 float Pixel_Lerp(float start, float end, float alpha);
+
+typedef struct {
+    float x;
+    float y;
+} Vec2;
 
 typedef struct {
   float x;
@@ -64,6 +78,9 @@ Vec3 Pixel_Vec4ToVec3(Vec4 vector);
 Mat4 Pixel_Mat4Identity();
 Mat4 Pixel_Mat4Mul(Mat4 mat1, Mat4 mat2);
 Vec4 Pixel_Mat4MulVec4(Mat4 mat, Vec4 vec);
+Vec3 Pixel_Mat4MulVec3(Mat4 mat, Vec3 vec);
+Mat4 Pixel_Mat4Transpose(Mat4 mat);
+Mat4 Pixel_Mat4Inverse(Mat4 mat);
 
 // Transformation Matrices
 Mat4 Pixel_Mat4ScaleMatrix(Vec3 scale_factor);
@@ -76,6 +93,7 @@ Mat4 Pixel_Mat4ViewMatrixTRS(Vec3 position, Vec3 angles_XYZ);
 Mat4 Pixel_Mat4PerspectiveProjectionMatrix(float fov_radians,
                                            float aspect_ratio, float near_plane,
                                            float far_plane);
+Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix);
 
 // -----------------------------------------------------------------
 // Defining Color related structs and methods
@@ -127,6 +145,38 @@ typedef enum {
 } DrawMode;
 
 typedef struct {
+    // Benchmarking values
+    int vertex_count;
+    int triangle_count;
+    int drawn_traingle_count;
+    float scene_rendering;
+    float mesh_rendering;
+    float light_transformation;
+    float vertex_out_with_lighting;
+    float triangle_rendering;
+
+    // Triangle Rasterixation Specific Benchmarks
+    float bounding_box;
+    float edge_cross_setup;
+    float attribute_interpolation;
+
+    int pixel_tested;
+    int pixel_inside;
+    int pixel_depth_failed;
+    int pixel_writtern;
+} Benchmark;
+
+// Generic vertex output passed to the rasterizer after vertex shading
+typedef struct {
+    Vec3 screen_pos;    // Screen space position (x, y, z)
+    Vec3 view_pos;      // View space position
+    Vec3 view_normal;   // View space normal
+    Color light_factor;  // Pre-calculated lighting accumulation (RGB)
+    Vec2 uv;            // Texture coordinates
+    Color base_color;   // Base vertex/material color
+} VertexOutput;
+
+typedef struct {
   uint32_t width;
   uint32_t height;
   // Buffers and depth buffers with swap buffers
@@ -136,6 +186,11 @@ typedef struct {
   // Different rendering mode used in the drawing functions and rendering loop
   // for controlling how the primitives and triangles are drawn
   DrawMode drawing_mode;
+  bool cull_backface;
+  Benchmark benchmark;
+
+  VertexOutput *out_vertices;
+  int out_vertices_capacity;
 } PixelContext;
 
 // -----------------------------------------------------------------
@@ -149,6 +204,7 @@ void Pixel_SetDrawMode(PixelContext *ctx, DrawMode draw_mode);
 void Pixel_Clear(PixelContext *ctx, uint32_t color);
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color);
 void Pixel_SaveBMP(PixelContext *ctx, const char *filename);
+void Pixel_PrintBenchmark(PixelContext* ctx);
 
 // -----------------------------------------------------------------
 // Simple primitives
@@ -208,7 +264,7 @@ typedef struct {
   Vec3 coordinate;
   Vec3 normal;
   Color color;
-  float u, v;
+  Vec2 uv;
 } PixelVertex;
 
 typedef struct {
@@ -216,11 +272,20 @@ typedef struct {
   uint32_t color;
 } PixelTriangle;
 
+// 1. Texture Struct Definition
+typedef struct {
+    uint32_t *pixels; // RGBA pixel data buffer
+    int width;
+    int height;
+} PixelTexture;
+
 typedef struct {
   PixelVertex *vertices;
   PixelTriangle *triangles;
   int vertex_count;
   int triangle_count;
+  PixelTexture *texture; // Optional: can be NULL if untextured
+  bool has_texture;
 } PixelMesh;
 
 typedef struct {
@@ -229,18 +294,74 @@ typedef struct {
   float scale;
 } PixelTransform;
 
+typedef enum {
+    AMBIENT_LIGHT = 0,
+    POINT_LIGHT,
+    DIRECTIONAL_LIGHT
+}PixelLightType;
+
 typedef struct {
-  PixelMesh *mesh;
-  PixelTransform transform;
+    PixelLightType type;       // 0 = Ambient, 1 = Point, 2 = Directional
+    Vec3 position;  // View space position (for point lights)
+    Vec3 direction; // View space normalized direction (for directional lights)
+    Color color;    // Light color/intensity tint
+    float intensity;// Base multiplier
+} Light;
+
+typedef struct {
+    Color ambient;
+    Color diffuse;
+    Color specular;
+    float shininess; // Specular exponent (alpha)
+} Material;
+
+
+
+typedef struct {
+    int x_min, y_min;
+    int x_max, y_max;
+} PixelBoundingBox;
+
+typedef struct {
+    float w0_col, w1_col, w2_col;
+    float w0_row, w1_row, w2_row;
+} PixelBaryWeightDiff;
+
+typedef struct {
+    float depth;
+    Color light_color;
+    Color base;
+    Vec2 uv;
+} PixelInterpolatedAttributes;
+
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
+
+// 2. Updated PixelInstance Struct (Containing Mesh, Transform, Material, and Texture)
+typedef struct {
+    PixelMesh *mesh;
+    PixelTransform transform;
+    Material material;
 } PixelInstance;
 
-Mat4 Pixel_ComputeMVP(PixelTransform transform, Mat4 view_matrix,
-                      Mat4 projection_matrix);
-void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh,
-                    PixelTransform transform, Mat4 view_matrix,
-                    Mat4 projection_matrix);
-void Pixel_RenderScene(PixelContext *ctx, const PixelInstance *scene, int instance_count, Mat4 view,
-                       Mat4 projection);
+// 3. Scene Struct Definition (Containing Instances and Lights)
+typedef struct {
+    PixelInstance *instances;
+    int instance_count;
+    Light *lights;
+    int light_count;
+} PixelScene;
+
+
+void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Mat4 projection);
+
+
+// -----------------------------------------------------------------
+// Simple Primitive 3D Shapes
+// -----------------------------------------------------------------
+
+PixelMesh CreateCubeMesh();
+PixelMesh CreateSphereMesh(float radius, int lats, int longs);
 
 #ifdef __cplusplus
 }

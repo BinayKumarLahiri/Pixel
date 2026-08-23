@@ -27,9 +27,18 @@
 
 
 #include <cstdint>
+#include <time.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+
+typedef struct {
+    struct timespec start_time;
+} PixelTimer;
+
+PixelTimer Pixel_TimerStart(void);
+float Pixel_TimerElapsedMs(PixelTimer* timer);
 
 // -----------------------------------------------------------------
 // Some Helper Methods useful for testing the code or building it
@@ -48,6 +57,11 @@ void Pixel_CreateDirectories(const char *path);
 float Pixel_Max(float val1, float val2);
 float Pixel_Min(float val1, float val2);
 float Pixel_Lerp(float start, float end, float alpha);
+
+typedef struct {
+    float x;
+    float y;
+} Vec2;
 
 typedef struct {
   float x;
@@ -89,6 +103,9 @@ Vec3 Pixel_Vec4ToVec3(Vec4 vector);
 Mat4 Pixel_Mat4Identity();
 Mat4 Pixel_Mat4Mul(Mat4 mat1, Mat4 mat2);
 Vec4 Pixel_Mat4MulVec4(Mat4 mat, Vec4 vec);
+Vec3 Pixel_Mat4MulVec3(Mat4 mat, Vec3 vec);
+Mat4 Pixel_Mat4Transpose(Mat4 mat);
+Mat4 Pixel_Mat4Inverse(Mat4 mat);
 
 // Transformation Matrices
 Mat4 Pixel_Mat4ScaleMatrix(Vec3 scale_factor);
@@ -101,6 +118,7 @@ Mat4 Pixel_Mat4ViewMatrixTRS(Vec3 position, Vec3 angles_XYZ);
 Mat4 Pixel_Mat4PerspectiveProjectionMatrix(float fov_radians,
                                            float aspect_ratio, float near_plane,
                                            float far_plane);
+Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix);
 
 // -----------------------------------------------------------------
 // Defining Color related structs and methods
@@ -152,6 +170,38 @@ typedef enum {
 } DrawMode;
 
 typedef struct {
+    // Benchmarking values
+    int vertex_count;
+    int triangle_count;
+    int drawn_traingle_count;
+    float scene_rendering;
+    float mesh_rendering;
+    float light_transformation;
+    float vertex_out_with_lighting;
+    float triangle_rendering;
+
+    // Triangle Rasterixation Specific Benchmarks
+    float bounding_box;
+    float edge_cross_setup;
+    float attribute_interpolation;
+
+    int pixel_tested;
+    int pixel_inside;
+    int pixel_depth_failed;
+    int pixel_writtern;
+} Benchmark;
+
+// Generic vertex output passed to the rasterizer after vertex shading
+typedef struct {
+    Vec3 screen_pos;    // Screen space position (x, y, z)
+    Vec3 view_pos;      // View space position
+    Vec3 view_normal;   // View space normal
+    Color light_factor;  // Pre-calculated lighting accumulation (RGB)
+    Vec2 uv;            // Texture coordinates
+    Color base_color;   // Base vertex/material color
+} VertexOutput;
+
+typedef struct {
   uint32_t width;
   uint32_t height;
   // Buffers and depth buffers with swap buffers
@@ -161,6 +211,11 @@ typedef struct {
   // Different rendering mode used in the drawing functions and rendering loop
   // for controlling how the primitives and triangles are drawn
   DrawMode drawing_mode;
+  bool cull_backface;
+  Benchmark benchmark;
+
+  VertexOutput *out_vertices;
+  int out_vertices_capacity;
 } PixelContext;
 
 // -----------------------------------------------------------------
@@ -174,6 +229,7 @@ void Pixel_SetDrawMode(PixelContext *ctx, DrawMode draw_mode);
 void Pixel_Clear(PixelContext *ctx, uint32_t color);
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color);
 void Pixel_SaveBMP(PixelContext *ctx, const char *filename);
+void Pixel_PrintBenchmark(PixelContext* ctx);
 
 // -----------------------------------------------------------------
 // Simple primitives
@@ -233,7 +289,7 @@ typedef struct {
   Vec3 coordinate;
   Vec3 normal;
   Color color;
-  float u, v;
+  Vec2 uv;
 } PixelVertex;
 
 typedef struct {
@@ -241,11 +297,20 @@ typedef struct {
   uint32_t color;
 } PixelTriangle;
 
+// 1. Texture Struct Definition
+typedef struct {
+    uint32_t *pixels; // RGBA pixel data buffer
+    int width;
+    int height;
+} PixelTexture;
+
 typedef struct {
   PixelVertex *vertices;
   PixelTriangle *triangles;
   int vertex_count;
   int triangle_count;
+  PixelTexture *texture; // Optional: can be NULL if untextured
+  bool has_texture;
 } PixelMesh;
 
 typedef struct {
@@ -254,18 +319,74 @@ typedef struct {
   float scale;
 } PixelTransform;
 
+typedef enum {
+    AMBIENT_LIGHT = 0,
+    POINT_LIGHT,
+    DIRECTIONAL_LIGHT
+}PixelLightType;
+
 typedef struct {
-  PixelMesh *mesh;
-  PixelTransform transform;
+    PixelLightType type;       // 0 = Ambient, 1 = Point, 2 = Directional
+    Vec3 position;  // View space position (for point lights)
+    Vec3 direction; // View space normalized direction (for directional lights)
+    Color color;    // Light color/intensity tint
+    float intensity;// Base multiplier
+} Light;
+
+typedef struct {
+    Color ambient;
+    Color diffuse;
+    Color specular;
+    float shininess; // Specular exponent (alpha)
+} Material;
+
+
+
+typedef struct {
+    int x_min, y_min;
+    int x_max, y_max;
+} PixelBoundingBox;
+
+typedef struct {
+    float w0_col, w1_col, w2_col;
+    float w0_row, w1_row, w2_row;
+} PixelBaryWeightDiff;
+
+typedef struct {
+    float depth;
+    Color light_color;
+    Color base;
+    Vec2 uv;
+} PixelInterpolatedAttributes;
+
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
+
+// 2. Updated PixelInstance Struct (Containing Mesh, Transform, Material, and Texture)
+typedef struct {
+    PixelMesh *mesh;
+    PixelTransform transform;
+    Material material;
 } PixelInstance;
 
-Mat4 Pixel_ComputeMVP(PixelTransform transform, Mat4 view_matrix,
-                      Mat4 projection_matrix);
-void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh,
-                    PixelTransform transform, Mat4 view_matrix,
-                    Mat4 projection_matrix);
-void Pixel_RenderScene(PixelContext *ctx, const PixelInstance *scene, int instance_count, Mat4 view,
-                       Mat4 projection);
+// 3. Scene Struct Definition (Containing Instances and Lights)
+typedef struct {
+    PixelInstance *instances;
+    int instance_count;
+    Light *lights;
+    int light_count;
+} PixelScene;
+
+
+void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Mat4 projection);
+
+
+// -----------------------------------------------------------------
+// Simple Primitive 3D Shapes
+// -----------------------------------------------------------------
+
+PixelMesh CreateCubeMesh();
+PixelMesh CreateSphereMesh(float radius, int lats, int longs);
 
 #ifdef __cplusplus
 }
@@ -282,10 +403,17 @@ void Pixel_RenderScene(PixelContext *ctx, const PixelInstance *scene, int instan
 
 /* --- Begin pixel.cpp --- */
 
+#include <cmath>
+#include <cstdio>
 
 // -----------------------------------------------------------------
 // Some Helper Methods useful for testing the code or building it
 // -----------------------------------------------------------------
+
+
+
+
+
 
 #if defined(_WIN32) || defined(__MINGW32__)
 #include <windows.h>
@@ -320,6 +448,170 @@ void Pixel_SwapInt(uint32_t *value1, uint32_t *value2) {
   int temp = *value1;
   *value1 = *value2;
   *value2 = temp;
+}
+
+
+// -----------------------------------------------------------------
+// Simple Primitive 3D Shapes
+// -----------------------------------------------------------------
+
+PixelMesh CreateCubeMesh() {
+    // 24 Vertices (4 independent vertices per face for flat-shaded/correct normals)
+    static PixelVertex vertices[24] = {
+        // --- Front Face (+Z) ---
+        {{-0.5f, -0.5f,  0.5f}, {0,0,1}, WHITE, {0, 0}},
+        {{ 0.5f, -0.5f,  0.5f}, {0,0,1}, WHITE, {1, 0}},
+        {{ 0.5f,  0.5f,  0.5f}, {0,0,1}, WHITE, {1, 1}},
+        {{-0.5f,  0.5f,  0.5f}, {0,0,1}, WHITE, {0, 1}},
+
+        // --- Back Face (-Z) ---
+        {{ 0.5f, -0.5f, -0.5f}, {0,0,-1}, WHITE, {0, 0}},
+        {{-0.5f, -0.5f, -0.5f}, {0,0,-1}, WHITE, {1, 0}},
+        {{-0.5f,  0.5f, -0.5f}, {0,0,-1}, WHITE, {1, 1}},
+        {{ 0.5f,  0.5f, -0.5f}, {0,0,-1}, WHITE, {0, 1}},
+
+        // --- Left Face (-X) ---
+        {{-0.5f, -0.5f, -0.5f}, {-1,0,0}, WHITE, {0, 0}},
+        {{-0.5f, -0.5f,  0.5f}, {-1,0,0}, WHITE, {1, 0}},
+        {{-0.5f,  0.5f,  0.5f}, {-1,0,0}, WHITE, {1, 1}},
+        {{-0.5f,  0.5f, -0.5f}, {-1,0,0}, WHITE, {0, 1}},
+
+        // --- Right Face (+X) ---
+        {{ 0.5f, -0.5f,  0.5f}, {1,0,0}, WHITE, {0, 0}},
+        {{ 0.5f, -0.5f, -0.5f}, {1,0,0}, WHITE, {1, 0}},
+        {{ 0.5f,  0.5f, -0.5f}, {1,0,0}, WHITE, {1, 1}},
+        {{ 0.5f,  0.5f,  0.5f}, {1,0,0}, WHITE, {0, 1}},
+
+        // --- Top Face (+Y) ---
+        {{-0.5f,  0.5f,  0.5f}, {0,1,0}, WHITE, {0, 0}},
+        {{ 0.5f,  0.5f,  0.5f}, {0,1,0}, WHITE, {1, 0}},
+        {{ 0.5f,  0.5f, -0.5f}, {0,1,0}, WHITE, {1, 1}},
+        {{-0.5f,  0.5f, -0.5f}, {0,1,0}, WHITE, {0, 1}},
+
+        // --- Bottom Face (-Y) ---
+        {{-0.5f, -0.5f, -0.5f}, {0,-1,0}, WHITE, {0, 0}},
+        {{ 0.5f, -0.5f, -0.5f}, {0,-1,0}, WHITE, {1, 0}},
+        {{ 0.5f, -0.5f,  0.5f}, {0,-1,0}, WHITE, {1, 1}},
+        {{-0.5f, -0.5f,  0.5f}, {0,-1,0}, WHITE, {0, 1}}
+    };
+
+    static PixelTriangle triangles[12] = {
+        {{0, 1, 2}, 0}, {{0, 2, 3}, 0},     // Front
+        {{4, 5, 6}, 0}, {{4, 6, 7}, 0},     // Back
+        {{8, 9, 10}, 0}, {{8, 10, 11}, 0},   // Left
+        {{12, 13, 14}, 0}, {{12, 14, 15}, 0}, // Right
+        {{16, 17, 18}, 0}, {{16, 18, 19}, 0}, // Top
+        {{20, 21, 22}, 0}, {{20, 22, 23}, 0}  // Bottom
+    };
+
+    PixelMesh mesh;
+    mesh.vertices = vertices;
+    mesh.vertex_count = 24;
+    mesh.triangles = triangles;
+    mesh.triangle_count = 12;
+    mesh.texture = nullptr;
+    mesh.has_texture = false;
+    return mesh;
+}
+
+PixelMesh CreateSphereMesh(float radius, int lats, int longs) {
+    int vertex_capacity = (lats + 1) * (longs + 1);
+    int triangle_capacity = lats * longs * 2;
+
+    PixelVertex* vertices = (PixelVertex*)malloc(vertex_capacity * sizeof(PixelVertex));
+    PixelTriangle* triangles = (PixelTriangle*)malloc(triangle_capacity * sizeof(PixelTriangle));
+
+    int vertex_count = 0;
+    int triangle_count = 0;
+
+    // 1. Generate Vertices
+    for (int i = 0; i <= lats; i++) {
+        float theta = (float)i * (float)PIXEL_PI / (float)lats;
+        float sinTheta = sinf(theta);
+        float cosTheta = cosf(theta);
+
+        for (int j = 0; j <= longs; j++) {
+            float phi = (float)j * (2.0f * (float)PIXEL_PI / (float)longs);
+            float sinPhi = sinf(phi);
+            float cosPhi = cosf(phi);
+
+            // Correct standard outward unit normal
+            Vec3 normal = {
+                cosPhi * sinTheta,
+                cosTheta,
+                sinPhi * sinTheta
+            };
+            normal = Pixel_Vec3Norm(normal);
+
+            // Vertex position based on radius and normal
+            Vec3 coord = {
+                radius * normal.x,
+                radius * normal.y,
+                radius * normal.z
+            };
+
+            // Standard UV coordinates mapping
+            Vec2 uv = {
+                (float)j / (float)longs,
+                (float)i / (float)lats
+            };
+
+            PixelVertex vertex = { coord, normal, WHITE, uv };
+            vertices[vertex_count++] = vertex;
+        }
+    }
+
+    // 2. Generate Triangles with standard consistent winding order
+    for (int i = 0; i < lats; i++) {
+        for (int j = 0; j < longs; j++) {
+            int first = (i * (longs + 1)) + j;
+            int second = first + longs + 1;
+
+            // Correct triangle winding order for proper front-face culling and lighting
+            PixelTriangle t1 = {{first, first + 1, second + 1}, 0};
+            PixelTriangle t2 = {{first, second + 1, second}, 0};
+
+            triangles[triangle_count++] = t1;
+            triangles[triangle_count++] = t2;
+        }
+    }
+
+    PixelMesh mesh;
+    mesh.vertices = vertices;
+    mesh.vertex_count = vertex_count;
+    mesh.triangles = triangles;
+    mesh.triangle_count = triangle_count;
+    mesh.texture = NULL;
+    mesh.has_texture = false;
+
+    return mesh;
+}
+
+void Pixel_PrintBenchmark(PixelContext* ctx) {
+    printf("\n\n\n");
+    switch (ctx->drawing_mode) {
+        case PIXEL_VERTEX:  printf("[DrawMode: PIXEL_VERTEX]\n");break;
+        case PIXEL_SOLID:  printf("[DrawMode: PIXEL_SOLID]\n");break;
+        case PIXEL_WIREFRAME:  printf("[DrawMode: PIXEL_WIREFRAME]\n");break;
+        case PIXEL_RENDER:  printf("[DrawMode: PIXEL_RENDER]\n");break;
+    }
+    printf("\n[Geometry Data]\n");
+    printf("[Total Vertices Processed]: %d\n", ctx->benchmark.vertex_count);
+    printf("[Total Triangle Contained]: %d\n", ctx->benchmark.triangle_count);
+    printf("[Total Triangle Drawn]: %d\n", ctx->benchmark.drawn_traingle_count);
+    printf("\n[Timing Data]\n");
+    printf("1. Scene Rendering: %f\n", ctx->benchmark.scene_rendering);
+    printf("2. Mesh Rendering: %f\n", ctx->benchmark.mesh_rendering);
+    printf("3. Light Transformation: %f\n", ctx->benchmark.light_transformation);
+    printf("4. OutVertex Calculation: %f\n", ctx->benchmark.vertex_out_with_lighting);
+    printf("5. Triangle Rendering: %f\n", ctx->benchmark.triangle_rendering);
+    // printf("\t5.1. Bounding Box: %f\n", ctx->benchmark.bounding_box);
+    // printf("\t5.2. Edge Cross Setup: %f\n", ctx->benchmark.edge_cross_setup);
+    // printf("\t5.3. Attribute Interpolation: %f\n", ctx->benchmark.attribute_interpolation);
+    printf("\t5.1. Pixel Tested: %d\n", ctx->benchmark.pixel_tested);
+    printf("\t5.2. Pixel Inside: %d\n", ctx->benchmark.pixel_inside);
+    printf("\t5.3. Pixel Depth Failed: %d\n", ctx->benchmark.pixel_depth_failed);
+    printf("\t5.4. Pixel Written: %d\n", ctx->benchmark.pixel_writtern);
 }
 
 /* --- End pixel.cpp --- */
@@ -412,11 +704,17 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   pixelContext->back_buffer =
       (uint32_t *)malloc(width * height * sizeof(uint32_t));
   pixelContext->depth_buffer = (float *)malloc(width * height * sizeof(float));
+  pixelContext->out_vertices = (VertexOutput *)malloc(256 * sizeof(VertexOutput));
+  pixelContext->out_vertices_capacity = 256;
 
   for(int i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
   // The default DrawMode of the library is set to PixelRender i.e.
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
+  pixelContext->cull_backface = true;
+
+  pixelContext->benchmark = {0};
+
   return pixelContext;
 }
 
@@ -430,6 +728,7 @@ void Pixel_Destroy(PixelContext *ctx) {
   // Free the memory assigned by the Initialization
   free(ctx->back_buffer);
   free(ctx->depth_buffer);
+  free(ctx->out_vertices);
   // Free the PixelContext itself
   free(ctx);
 }
@@ -509,6 +808,9 @@ void Pixel_SaveBMP(PixelContext *ctx, const char *filename) {
 /* --- Begin pixel_math.cpp --- */
 
 #include <cmath>
+
+// Helper to access column-major layout: col * 4 + row
+#define MAT4_IDX(col, row) ((col) * 4 + (row))
 
 // -----------------------------------------------------------------
 // Vector and Maths Related stuff
@@ -623,6 +925,84 @@ Vec4 Pixel_Mat4MulVec4(Mat4 mat, Vec4 vec) {
   return result;
 }
 
+Vec3 Pixel_Mat4MulVec3(Mat4 mat, Vec3 vec) {
+    Vec4 v = Pixel_Mat4MulVec4(mat, {vec.x, vec.y, vec.z, 0});
+    return {v.x, v.y, v.z};
+}
+
+
+// Helper to compute the determinant of a 3x3 submatrix from a 16-element column-major array
+static float Pixel_Mat3DetFromMat4(const float *m, int skip_col, int skip_row) {
+    float sub[3][3];
+    int r_idx = 0;
+    for (int r = 0; r < 4; r++) {
+        if (r == skip_row) continue;
+        int c_idx = 0;
+        for (int c = 0; c < 4; c++) {
+            if (c == skip_col) continue;
+            sub[r_idx][c_idx] = m[MAT4_IDX(c, r)];
+            c_idx++;
+        }
+        r_idx++;
+    }
+    return sub[0][0] * (sub[1][1] * sub[2][2] - sub[1][2] * sub[2][1]) -
+           sub[0][1] * (sub[1][0] * sub[2][2] - sub[1][2] * sub[2][0]) +
+           sub[0][2] * (sub[1][0] * sub[2][1] - sub[1][1] * sub[2][0]);
+}
+
+// Compute the Transpose of a column-major 4x4 matrix
+Mat4 Pixel_Mat4Transpose(Mat4 mat) {
+    Mat4 result;
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            result.m[MAT4_IDX(c, r)] = mat.m[MAT4_IDX(r, c)];
+        }
+    }
+    return result;
+}
+
+// Compute the Inverse of a column-major 4x4 matrix using adjugate/cofactor method
+Mat4 Pixel_Mat4Inverse(Mat4 mat) {
+    Mat4 inv;
+    float det = 0.0f;
+
+    // Compute cofactor expansion / adjugate matrix
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            int sign = ((r + c) % 2 == 0) ? 1 : -1;
+            float sub_det = Pixel_Mat3DetFromMat4(mat.m, c, r);
+
+            // In a column-major inverse, the transpose of the cofactor matrix is built into placement:
+            // inv.m[MAT4_IDX(r, c)] corresponds to row r, col c in mathematical terms
+            inv.m[MAT4_IDX(r, c)] = (float)sign * sub_det;
+        }
+    }
+
+    // Calculate full 4x4 determinant using the first column expansion
+    for (int r = 0; r < 4; r++) {
+        det += mat.m[MAT4_IDX(0, r)] * inv.m[MAT4_IDX(r, 0)]; // Using cofactors of column 0
+    }
+
+    // Handle degenerate/non-invertible matrices safely
+    if (fabsf(det) < 0.00001f) {
+        Mat4 identity = {0};
+        for (int i = 0; i < 4; i++) {
+            identity.m[MAT4_IDX(i, i)] = 1.0f;
+        }
+        return identity;
+    }
+
+    float inv_det = 1.0f / det;
+
+    // Multiply by 1 / determinant
+    for (int i = 0; i < 16; i++) {
+        inv.m[i] *= inv_det;
+    }
+
+    return inv;
+}
+
+
 
 // Transformation Matrices
 Mat4 Pixel_Mat4ScaleMatrix(Vec3 scale_factor) {
@@ -684,16 +1064,24 @@ Mat4 Pixel_Mat4RotationMatrixXYZ(Vec3 angles_XYZ) {
   Mat4 x_rotate = Pixel_Mat4RotationMatrixX(angles_XYZ.x);
   Mat4 y_rotate = Pixel_Mat4RotationMatrixY(angles_XYZ.y);
   Mat4 z_rotate = Pixel_Mat4RotationMatrixZ(angles_XYZ.z);
-  Mat4 result = Pixel_Mat4Mul(x_rotate, Pixel_Mat4Mul(y_rotate, z_rotate));
+  Mat4 result = Pixel_Mat4Mul(z_rotate, Pixel_Mat4Mul(y_rotate, x_rotate));
+  return result;
+}
+
+static Mat4 Pixel_Mat4RotationMatrixZYX(Vec3 angles_XYZ) {
+  Mat4 x_rotate = Pixel_Mat4RotationMatrixX(angles_XYZ.x);
+  Mat4 y_rotate = Pixel_Mat4RotationMatrixY(angles_XYZ.y);
+  Mat4 z_rotate = Pixel_Mat4RotationMatrixZ(angles_XYZ.z);
+  Mat4 result = Pixel_Mat4Mul(z_rotate, Pixel_Mat4Mul(y_rotate, x_rotate));
   return result;
 }
 
 Mat4 Pixel_Mat4ViewMatrixTRS(Vec3 position, Vec3 angles_XYZ) {
   Vec3 inverted_rotation = {-angles_XYZ.x, -angles_XYZ.y, -angles_XYZ.z};
   Vec3 inverted_translation = {-position.x, -position.y, -position.z};
-  Mat4 rotation = Pixel_Mat4RotationMatrixXYZ(inverted_rotation);
+  Mat4 rotation = Pixel_Mat4RotationMatrixZYX(inverted_rotation);
   Mat4 translation = Pixel_Mat4TranslationMatrix(inverted_translation);
-  Mat4 view_matrix = Pixel_Mat4Mul(translation, rotation);
+  Mat4 view_matrix = Pixel_Mat4Mul(rotation, translation);
   return view_matrix;
 }
 
@@ -710,6 +1098,11 @@ Mat4 Pixel_Mat4PerspectiveProjectionMatrix(float fov_radians, float aspect_ratio
     result.m[14] = (near_plane * far_plane) / (near_plane - far_plane);
 
     return result;
+}
+
+Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix) {
+    Mat4 inv_mv = Pixel_Mat4Inverse(mv_matrix);
+    return Pixel_Mat4Transpose(inv_mv);
 }
 
 /* --- End pixel_math.cpp --- */
@@ -1012,184 +1405,474 @@ void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point1,
 /* --- Begin pixel_renderer.cpp --- */
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
+// Start the timer
+PixelTimer Pixel_TimerStart(void) {
+    PixelTimer timer;
+    timespec_get(&timer.start_time, TIME_UTC);
+    return timer;
+}
+
+// Stop the timer and return elapsed time in milliseconds (float)
+float Pixel_TimerElapsedMs(PixelTimer* timer) {
+    struct timespec end_time;
+    timespec_get(&end_time, TIME_UTC);
+
+    long seconds = end_time.tv_sec - timer->start_time.tv_sec;
+    long nanoseconds = end_time.tv_nsec - timer->start_time.tv_nsec;
+
+    return (float)seconds * 1000.0f + (float)nanoseconds / 1000000.0f;
+}
+
 // -----------------------------------------------------------------
-// 3D Rendering Related stuff (Vertex, Mesh, )
+// 3D Rendering Related stuff (Vertex, Mesh, etc.)
 // -----------------------------------------------------------------
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y) {
+    return WHITE;
+}
 
-void Pixel_DrawTriangleDepthColor(PixelContext *ctx, float x0, float y0, float x1, float y1,
-                              float x2, float y2, Color color0, Color color1,
-                              Color color2, float z0, float z1, float z2) {
-  // Keep full float precision for screen vertices!
-  Vec3 v0 = {x0, y0, 0};
-  Vec3 v1 = {x1, y1, 0};
-  Vec3 v2 = {x2, y2, 0};
 
-  int x_min = Pixel_Max(0, (int)floorf(Pixel_Min(Pixel_Min(x0, x1), x2)));
-  int x_max = Pixel_Min(ctx->width - 1, (int)ceilf(Pixel_Max(Pixel_Max(x0, x1), x2)));
-  int y_min = Pixel_Max(0, (int)floorf(Pixel_Min(Pixel_Min(y0, y1), y2)));
-  int y_max = Pixel_Min(ctx->height - 1, (int)ceilf(Pixel_Max(Pixel_Max(y0, y1), y2)));
-
-  // Early exit if bounding box is completely off-screen
-  if (x_min > x_max || y_min > y_max) return;
-
-  float delta_w0_col = v1.y - v2.y;
-  float delta_w1_col = v2.y - v0.y;
-  float delta_w2_col = v0.y - v1.y;
-
-  float delta_w0_row = v2.x - v1.x;
-  float delta_w1_row = v0.x - v2.x;
-  float delta_w2_row = v1.x - v0.x;
-
-  float triangle_area = Pixel_Vec3EdgeCross(v0, v1, v2);
-  if (fabsf(triangle_area) < 0.0001f) return; // Degenerate triangle
-
-  float r0 = color0.r, g0 = color0.g, b0 = color0.b, a0 = color0.a;
-  float r1 = color1.r, g1 = color1.g, b1 = color1.b;
-  float r2 = color2.r, g2 = color2.g, b2 = color2.b;
-
-  Vec3 p0 = {(float)x_min, (float)y_min, 0};
-  float w0_row = Pixel_Vec3EdgeCross(v1, v2, p0);
-  float w1_row = Pixel_Vec3EdgeCross(v2, v0, p0);
-  float w2_row = Pixel_Vec3EdgeCross(v0, v1, p0);
-
-  for (int y = y_min; y <= y_max; ++y) {
-    float w0 = w0_row;
-    float w1 = w1_row;
-    float w2 = w2_row;
-    for (int x = x_min; x <= x_max; ++x) {
-      float alpha = w0 / triangle_area;
-      float beta = w1 / triangle_area;
-      float gamma = w2 / triangle_area;
-
-      // Check if pixel is inside the triangle (handling winding order rules)
-      bool inside = (triangle_area > 0) ? (w0 >= 0 && w1 >= 0 && w2 >= 0)
-                                        : (w0 <= 0 && w1 <= 0 && w2 <= 0);
-
-      // bool inside = true;
-
-      if (inside) {
-        float z = z0 * alpha + z1 * beta + z2 * gamma;
-        float r = r0 * alpha + r1 * beta + r2 * gamma;
-        float g = g0 * alpha + g1 * beta + g2 * gamma;
-        float b = b0 * alpha + b1 * beta + b2 * gamma;
-
-        uint32_t fill_color = ((uint32_t)a0 << 24) |
-                              ((uint32_t)r << 16) |
-                              ((uint32_t)g << 8)  |
-                              (uint32_t)b;
-
-        int index = y * ctx->width + x;
-
-        // printf("z = %f\n", z);
-        if (ctx->depth_buffer[index] > z) {
-            ctx->depth_buffer[index] = z;
-            ctx->back_buffer[index] = fill_color;
+// Transform world lights to View Space once per frame
+static void Pixel_PrepareLights(const Light *world_lights, Light *view_lights, int light_count, Mat4 view_matrix) {
+    // // PixelTimer timer = Pixel_TimerStart();
+    for (int i = 0; i < light_count; i++) {
+        view_lights[i] = world_lights[i];
+        if (world_lights[i].type == 1) { // Point Light Position
+            Vec4 vp = Pixel_Mat4MulVec4(view_matrix, (Vec4){world_lights[i].position.x, world_lights[i].position.y, world_lights[i].position.z, 1.0f});
+            view_lights[i].position = (Vec3){vp.x, vp.y, vp.z};
+        } else if (world_lights[i].type == 2) { // Directional Light Direction (Ignore translation w = 0)
+            Vec4 vd = Pixel_Mat4MulVec4(view_matrix, (Vec4){world_lights[i].direction.x, world_lights[i].direction.y, world_lights[i].direction.z, 0.0f});
+            view_lights[i].direction = Pixel_Vec3Norm((Vec3){vd.x, vd.y, vd.z});
         }
-        // ctx->back_buffer[index] = fill_color;
-      }
-      w0 += delta_w0_col;
-      w1 += delta_w1_col;
-      w2 += delta_w2_col;
     }
-    w0_row += delta_w0_row;
-    w1_row += delta_w1_row;
-    w2_row += delta_w2_row;
-  }
+    // // printf("[Lights World to Viewspace]: %f\n", Pixel_TimerElapsedMs(&timer));
 }
 
-Mat4 Pixel_ComputeMVP(PixelTransform transform, Mat4 view_matrix, Mat4 projection_matrix) {
-    // 1. Create transformation matrices from transform components
-    // (Note: scale is a single float here, so we apply it uniformly to X, Y, Z)
-    Mat4 scale_mat = Pixel_Mat4ScaleMatrix((Vec3){transform.scale, transform.scale, transform.scale});
-    Mat4 rot_mat   = Pixel_Mat4RotationMatrixXYZ(transform.rotation);
-    Mat4 trans_mat = Pixel_Mat4TranslationMatrix(transform.position);
+// Calculate Blinn-Phong lighting accumulation at a single vertex (Gouraud Shading)
+static Color Pixel_CalculateVertexLighting(Vec3 view_pos, Vec3 view_normal, const Light *lights, int light_count, Material material) {
+    // // PixelTimer timer = Pixel_TimerStart();
+    Vec3 N = Pixel_Vec3Norm(view_normal);
+    Vec3 V = Pixel_Vec3Norm(Pixel_Vec3Sub((Vec3){0.0f, 0.0f, 0.0f}, view_pos)); // Camera at origin in View Space
 
-    // 2. Model Matrix = Translation * Rotation * Scale
-    Mat4 rot_scale    = Pixel_Mat4Mul(rot_mat, scale_mat);
-    Mat4 model_matrix = Pixel_Mat4Mul(trans_mat, rot_scale);
+    // Initialize lighting intensity accumulator (1.0 = full baseline ambient multiplier)
+    Color total_light = {
+        material.ambient.r / 255.0f,
+        material.ambient.g / 255.0f,
+        material.ambient.b / 255.0f,
+        1.0f
+    };
 
-    // 3. MVP = Projection * View * Model
-    Mat4 vp = Pixel_Mat4Mul(projection_matrix, view_matrix);
-    Mat4 mvp = Pixel_Mat4Mul(vp, model_matrix);
+    for (int l = 0; l < light_count; l++) {
+        Light light = lights[l];
+        Vec3 L;
+        float attenuation = 1.0f;
 
-    return mvp;
+        if (light.type == AMBIENT_LIGHT) { // Ambient Light source type
+            total_light.r += (light.color.r / 255.0f) * light.intensity * (material.ambient.r / 255.0f);
+            total_light.g += (light.color.g / 255.0f) * light.intensity * (material.ambient.g / 255.0f);
+            total_light.b += (light.color.b / 255.0f) * light.intensity * (material.ambient.b / 255.0f);
+            continue;
+        }
+        else if (light.type == POINT_LIGHT) { // Point Light
+            Vec3 light_dir_vec = Pixel_Vec3Sub(light.position, view_pos);
+            float distance = Pixel_Vec3Len(light_dir_vec);
+            L = Pixel_Vec3Norm(light_dir_vec);
+            // Attenuation formula
+            attenuation = 1.0f / (1.0f + 0.09f * distance + 0.032f * (distance * distance));
+        }
+        else { // Directional Light
+            L = Pixel_Vec3Norm(Pixel_Vec3Mul(light.direction, -1.0f));
+        }
+
+        // --- Diffuse Term (Lambertian) ---
+        float diff = Pixel_Max(0.0f, Pixel_Vec3Dot(N, L));
+        float lr = light.color.r / 255.0f;
+        float lg = light.color.g / 255.0f;
+        float lb = light.color.b / 255.0f;
+
+        total_light.r += lr * light.intensity * diff * (material.diffuse.r / 255.0f) * attenuation;
+        total_light.g += lg * light.intensity * diff * (material.diffuse.g / 255.0f) * attenuation;
+        total_light.b += lb * light.intensity * diff * (material.diffuse.b / 255.0f) * attenuation;
+
+        // --- Specular Term (Blinn-Phong) ---
+        if (diff > 0.0f) {
+            Vec3 H = Pixel_Vec3Norm(Pixel_Vec3Add(L, V));
+            float spec = powf(Pixel_Max(0.0f, Pixel_Vec3Dot(N, H)), material.shininess);
+            // Allow high shininess values to accumulate full magnitude without artificial suppression
+            total_light.r += lr * light.intensity * spec * (material.specular.r / 255.0f) * attenuation;
+            total_light.g += lg * light.intensity * spec * (material.specular.g / 255.0f) * attenuation;
+            total_light.b += lb * light.intensity * spec * (material.specular.b / 255.0f) * attenuation;
+        }
+    }
+    // // printf("[Single Vertex Blin-Phong Lighting Calculation]: %f\n", Pixel_TimerElapsedMs(&timer));
+    return total_light;
 }
 
-static Vec3 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height) {
+static PixelBoundingBox Pixel_ComputeTriangleBoundingBox(PixelContext *ctx, VertexOutput v0, VertexOutput v1, VertexOutput v2) {
+    PixelBoundingBox box = {0};
+    box.x_min = (int)Pixel_Max(0.0f, floorf(Pixel_Min(Pixel_Min(v0.screen_pos.x, v1.screen_pos.x), v2.screen_pos.x)));
+    box.x_max = (int)Pixel_Min((float)(ctx->width - 1), ceilf(Pixel_Max(Pixel_Max(v0.screen_pos.x, v1.screen_pos.x), v2.screen_pos.x)));
+    box.y_min = (int)Pixel_Max(0.0f, floorf(Pixel_Min(Pixel_Min(v0.screen_pos.y, v1.screen_pos.y), v2.screen_pos.y)));
+    box.y_max = (int)Pixel_Min((float)(ctx->height - 1), ceilf(Pixel_Max(Pixel_Max(v0.screen_pos.y, v1.screen_pos.y), v2.screen_pos.y)));
+    return box;
+}
+
+static PixelBaryWeightDiff Pixel_ComputeBaryWeightDiff(VertexOutput v0, VertexOutput v1, VertexOutput v2) {
+    PixelBaryWeightDiff diff = {0};
+    diff.w0_col = v1.screen_pos.y - v2.screen_pos.y;
+    diff.w1_col = v2.screen_pos.y - v0.screen_pos.y;
+    diff.w2_col = v0.screen_pos.y - v1.screen_pos.y;
+
+    diff.w0_row = v2.screen_pos.x - v1.screen_pos.x;
+    diff.w1_row = v0.screen_pos.x - v2.screen_pos.x;
+    diff.w2_row = v1.screen_pos.x - v0.screen_pos.x;
+
+    return  diff;
+}
+
+static void Pixel_InterpolateAttributes(VertexOutput v0, VertexOutput v1, VertexOutput v2, float alpha, float beta, float gamma, PixelInterpolatedAttributes *interpolated_values) {
+    interpolated_values->depth = v0.screen_pos.z * alpha + v1.screen_pos.z * beta + v2.screen_pos.z * gamma;
+
+    interpolated_values->light_color = {
+        v0.light_factor.r * alpha + v1.light_factor.r * beta + v2.light_factor.r * gamma,
+        v0.light_factor.g * alpha + v1.light_factor.g * beta + v2.light_factor.g * gamma,
+        v0.light_factor.b * alpha + v1.light_factor.b * beta + v2.light_factor.b * gamma,
+        1.0f
+    };
+
+    interpolated_values->base = {
+        v0.base_color.r * alpha + v1.base_color.r * beta + v2.base_color.r * gamma,
+        v0.base_color.g * alpha + v1.base_color.g * beta + v2.base_color.g * gamma,
+        v0.base_color.b * alpha + v1.base_color.b * beta + v2.base_color.b * gamma,
+        255.0f
+    };
+
+    interpolated_values->uv = {
+        v0.uv.x * alpha + v1.uv.x * beta + v2.uv.x * gamma,
+        v0.uv.y * alpha + v1.uv.y * beta + v2.uv.y * gamma
+    };
+}
+
+static uint32_t Pixel_ShadeFragment(PixelContext *ctx, const PixelTexture *texture, bool use_texture, PixelInterpolatedAttributes *interpolated_attr) {
+    Color surface_color;
+    if (use_texture && texture) {
+        surface_color = Pixel_SampleTexture((PixelTexture*)texture, interpolated_attr->uv.x, interpolated_attr->uv.y);
+    } else {
+        surface_color = interpolated_attr->base;
+    }
+
+    float final_r = Pixel_Max(0.0f, Pixel_Min(255.0f, surface_color.r * interpolated_attr->light_color.r));
+    float final_g = Pixel_Max(0.0f, Pixel_Min(255.0f, surface_color.g * interpolated_attr->light_color.g));
+    float final_b = Pixel_Max(0.0f, Pixel_Min(255.0f, surface_color.b * interpolated_attr->light_color.b));
+
+    return ((uint32_t)surface_color.a << 24) |
+                          ((uint32_t)final_r << 16) |
+                          ((uint32_t)final_g << 8) |
+                          (uint32_t)final_b;
+}
+
+static void Pixel_DrawTriangleGeneric(PixelContext *ctx, VertexOutput v0, VertexOutput v1, VertexOutput v2,
+                               const PixelTexture *texture, bool use_texture, Material material) {
+
+                                   // PixelTimer timer = Pixel_TimerStart();
+
+    // Calculate the Triangle Bounding Box
+    PixelBoundingBox bounding_box = Pixel_ComputeTriangleBoundingBox(ctx, v0, v1, v2);
+    // // ctx->benchmark.bounding_box += Pixel_TimerElapsedMs(&timer);
+    if (bounding_box.x_min > bounding_box.x_max || bounding_box.y_min > bounding_box.y_max) return;
+
+    // // PixelTimer area_setup_timer = Pixel_TimerStart();
+    float triangle_area = Pixel_Vec3EdgeCross(v0.screen_pos, v1.screen_pos, v2.screen_pos);
+    if (fabsf(triangle_area) < 0.0001f) return;
+    float inv_area = 1.0f/triangle_area;
+    Vec3 p0 = {(float)bounding_box.x_min, (float)bounding_box.y_min, 0};
+    float w0_row = Pixel_Vec3EdgeCross(v1.screen_pos, v2.screen_pos, p0);
+    float w1_row = Pixel_Vec3EdgeCross(v2.screen_pos, v0.screen_pos, p0);
+    float w2_row = Pixel_Vec3EdgeCross(v0.screen_pos, v1.screen_pos, p0);
+
+    PixelBaryWeightDiff delta = Pixel_ComputeBaryWeightDiff(v0, v1, v2);
+    PixelInterpolatedAttributes interpolated_attr = {0};
+
+    // // ctx->benchmark.edge_cross_setup += Pixel_TimerElapsedMs(&area_setup_timer);
+
+    for (int y = bounding_box.y_min; y <= bounding_box.y_max; ++y) {
+        float w0 = w0_row;
+        float w1 = w1_row;
+        float w2 = w2_row;
+
+        for (int x = bounding_box.x_min; x <= bounding_box.x_max; ++x) {
+            // ctx->benchmark.pixel_tested++;
+
+            // Inside-triangle coverage test
+            bool inside = (triangle_area > 0) ? (w0 >= 0 && w1 >= 0 && w2 >= 0)
+                                              : (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            if (inside) {
+                // ctx->benchmark.pixel_inside++;
+                float alpha = w0 * inv_area;
+                float beta  = w1 * inv_area;
+                float gamma = w2 * inv_area;
+                // // PixelTimer interPolation_timer = Pixel_TimerStart();
+                Pixel_InterpolateAttributes(v0, v1, v2, alpha, beta, gamma, &interpolated_attr);
+                // // ctx->benchmark.attribute_interpolation += Pixel_TimerElapsedMs(&interPolation_timer);
+                int index = y * ctx->width + x;
+                if (ctx->depth_buffer[index] > interpolated_attr.depth) {
+                    // ctx->benchmark.pixel_writtern++;
+                    ctx->depth_buffer[index] = interpolated_attr.depth;
+                    uint32_t fill_color = Pixel_ShadeFragment(ctx, texture, use_texture, &interpolated_attr);
+                    ctx->back_buffer[index] = fill_color;
+                }else {
+                    // ctx->benchmark.pixel_depth_failed++;
+                }
+            }
+
+            w0 += delta.w0_col;
+            w1 += delta.w1_col;
+            w2 += delta.w2_col;
+        }
+
+        w0_row += delta.w0_row;
+        w1_row += delta.w1_row;
+        w2_row += delta.w2_row;
+    }
+    // ctx->benchmark.triangle_rendering += Pixel_TimerElapsedMs(&timer);
+
+    // // // printf("[Triangle Render]: %f\n", Pixel_TimerElapsedMs(&traingle_timer));
+}
+
+
+static inline Vec3 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height) {
     Vec4 clip = Pixel_Mat4MulVec4(mvp, Pixel_Vec3ToVec4(local_pos));
-    Vec3 ndc = Pixel_Vec4ToVec3(clip); // Handles perspective division (x/w, y/w, z/w)
-
+    Vec3 ndc = Pixel_Vec4ToVec3(clip);
     Vec3 screen;
     screen.x = (ndc.x + 1.0f) * 0.5f * (float)width;
-    screen.y = (1.0f - ndc.y) * 0.5f * (float)height; // Inverted Y for top-left window origin
-    screen.z = ndc.z; // Depth for Z-buffer
+    screen.y = (1.0f - ndc.y) * 0.5f * (float)height;
+    screen.z = ndc.z;
     return screen;
 }
 
-void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransform transform, Mat4 view_matrix, Mat4 projection_matrix) {
+static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Mat4 mv_matrix, Mat4 normal_matrix, const Light *view_lights, int light_count, Material material, PixelVertex raw) {
+    // // PixelTimer out_vertex = Pixel_TimerStart();
+    VertexOutput out = {0};
+    out.screen_pos = screen_pos;
+    out.view_pos = Pixel_Vec4ToVec3(Pixel_Mat4MulVec4(mv_matrix, Pixel_Vec3ToVec4(raw.coordinate)));
+    out.view_normal = Pixel_Vec4ToVec3(Pixel_Mat4MulVec4(normal_matrix, Pixel_Vec3ToVec4(raw.normal)));
+    out.light_factor = Pixel_CalculateVertexLighting(out.view_pos, out.view_normal, view_lights, light_count, material);
+    out.uv = raw.uv;
+    out.base_color = raw.color;
+    // // printf("[Single Out Vertex Calculation]: %f\n", Pixel_TimerElapsedMs(&out_vertex));
+    return out;
+}
+
+// static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransform transform,
+//                            Mat4 view_matrix, Mat4 projection_matrix,
+//                            const Light *view_lights, int light_count, Material material) {
+
+//     if (!ctx || !mesh || !mesh->vertices || !mesh->triangles) return;
+
+//     // PixelTimer timer = Pixel_TimerStart();
+
+//     // 1. Compute Transformation Matrices
+//     Mat4 scale_mat = Pixel_Mat4ScaleMatrix((Vec3){transform.scale, transform.scale, transform.scale});
+//     Mat4 rot_mat = Pixel_Mat4RotationMatrixXYZ(transform.rotation);
+//     Mat4 trans_mat = Pixel_Mat4TranslationMatrix(transform.position);
+//     Mat4 model_matrix = Pixel_Mat4Mul(trans_mat, Pixel_Mat4Mul(rot_mat, scale_mat));
+
+//     Mat4 mv_matrix = Pixel_Mat4Mul(view_matrix, model_matrix);
+//     Mat4 mvp = Pixel_Mat4Mul(projection_matrix, mv_matrix);
+//     Mat4 normal_matrix = Pixel_ComputeNormalMatrix(mv_matrix);
+
+//     for (int i = 0; i < mesh->triangle_count; i++) {
+//         PixelTriangle tri = mesh->triangles[i];
+//         PixelVertex raw_v0 = mesh->vertices[tri.vertices[0]];
+//         PixelVertex raw_v1 = mesh->vertices[tri.vertices[1]];
+//         PixelVertex raw_v2 = mesh->vertices[tri.vertices[2]];
+
+//         // Backface Culling Check (Using Screen Space Area)
+//         Vec3 s0 = TransformVertexToScreen(raw_v0.coordinate, mvp, ctx->width, ctx->height);
+//         Vec3 s1 = TransformVertexToScreen(raw_v1.coordinate, mvp, ctx->width, ctx->height);
+//         Vec3 s2 = TransformVertexToScreen(raw_v2.coordinate, mvp, ctx->width, ctx->height);
+
+//         float area = (s1.x - s0.x) * (s2.y - s0.y) - (s1.y - s0.y) * (s2.x - s0.x);
+//         if (ctx->cull_backface && area >= 0.0f) continue; // Counter-clockwise front-face culling
+
+//         // ctx->benchmark.drawn_traingle_count++;
+
+//         switch (ctx->drawing_mode) {
+//             case PIXEL_VERTEX: {
+//                 // Draw only the vertices as points or small markers
+//                 Pixel_PutPixel(ctx, (uint32_t)s0.x, (uint32_t)s0.y, Pixel_Color2Uint32(raw_v0.color));
+//                 Pixel_PutPixel(ctx, (uint32_t)s1.x, (uint32_t)s1.y, Pixel_Color2Uint32(raw_v1.color));
+//                 Pixel_PutPixel(ctx, (uint32_t)s2.x, (uint32_t)s2.y, Pixel_Color2Uint32(raw_v2.color));
+//                 break;
+//             }
+//             case PIXEL_WIREFRAME: {
+//                 // Draw lines connecting the triangle vertices
+//                 Pixel_DrawLine(ctx, (uint32_t)s0.x, (uint32_t)s0.y, (uint32_t)s1.x, (uint32_t)s1.y, raw_v0.color);
+//                 Pixel_DrawLine(ctx, (uint32_t)s1.x, (uint32_t)s1.y, (uint32_t)s2.x, (uint32_t)s2.y, raw_v1.color);
+//                 Pixel_DrawLine(ctx, (uint32_t)s2.x, (uint32_t)s2.y, (uint32_t)s0.x, (uint32_t)s0.y, raw_v2.color);
+//                 break;
+//             }
+//             case PIXEL_SOLID: {
+//                 // PixelTimer out_timer = Pixel_TimerStart();
+//                 // Draw solid flat colors ignoring lighting calculations
+//                 VertexOutput out0, out1, out2;
+//                 out0.screen_pos = s0; out0.base_color = raw_v0.color; out0.light_factor = (Color){1,1,1,1}; out0.uv = raw_v0.uv;
+//                 out1.screen_pos = s1; out1.base_color = raw_v1.color; out1.light_factor = (Color){1,1,1,1}; out1.uv = raw_v1.uv;
+//                 out2.screen_pos = s2; out2.base_color = raw_v2.color; out2.light_factor = (Color){1,1,1,1}; out2.uv = raw_v2.uv;
+//                 // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
+//                 // Pass base color with lighting factor forced to 1.0 (no shading)
+//                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
+//                 break;
+//             }
+//             case PIXEL_RENDER:
+//             default: {
+//                 // PixelTimer out_timer = Pixel_TimerStart();
+//                 // Full rendering mode with lighting, textures, and material attributes enabled
+//                 VertexOutput out0 = Pixel_ComputeVertexOutput(s0, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v0);
+//                 VertexOutput out1 = Pixel_ComputeVertexOutput(s1, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v1);
+//                 VertexOutput out2 = Pixel_ComputeVertexOutput(s2, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v2);
+
+//                 // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
+
+//                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
+
+//                 break;
+//             }
+//         }
+//     }
+
+//     // ctx->benchmark.mesh_rendering += Pixel_TimerElapsedMs(&timer);
+//     // // printf("[Mesh]: %f\n", Pixel_TimerElapsedMs(&timer));
+// }
+
+static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransform transform,
+                           Mat4 view_matrix, Mat4 projection_matrix,
+                           const Light *view_lights, int light_count, Material material) {
+
     if (!ctx || !mesh || !mesh->vertices || !mesh->triangles) return;
 
-    Mat4 mvp = Pixel_ComputeMVP(transform, view_matrix, projection_matrix);
+    // PixelTimer timer = Pixel_TimerStart();
 
+    // 1. Compute Transformation Matrices
+    Mat4 scale_mat = Pixel_Mat4ScaleMatrix((Vec3){transform.scale, transform.scale, transform.scale});
+    Mat4 rot_mat = Pixel_Mat4RotationMatrixXYZ(transform.rotation);
+    Mat4 trans_mat = Pixel_Mat4TranslationMatrix(transform.position);
+    Mat4 model_matrix = Pixel_Mat4Mul(trans_mat, Pixel_Mat4Mul(rot_mat, scale_mat));
+
+    Mat4 mv_matrix = Pixel_Mat4Mul(view_matrix, model_matrix);
+    Mat4 mvp = Pixel_Mat4Mul(projection_matrix, mv_matrix);
+    Mat4 normal_matrix = Pixel_ComputeNormalMatrix(mv_matrix);
+
+    // =========================================================================
+    // PHASE 1: Ensure buffer capacity and precompute all vertex outputs
+    // =========================================================================
+    if (ctx->out_vertices_capacity < mesh->vertex_count) {
+        ctx->out_vertices_capacity = mesh->vertex_count;
+        ctx->out_vertices = (VertexOutput*)realloc(ctx->out_vertices, ctx->out_vertices_capacity * sizeof(VertexOutput));
+    }
+
+    // PixelTimer out_timer = Pixel_TimerStart();
+    for (int i = 0; i < mesh->vertex_count; i++) {
+        PixelVertex raw_v = mesh->vertices[i];
+        Vec3 screen_pos = TransformVertexToScreen(raw_v.coordinate, mvp, ctx->width, ctx->height);
+
+        if (ctx->drawing_mode == PIXEL_SOLID) {
+            VertexOutput out;
+            out.screen_pos = screen_pos;
+            out.base_color = raw_v.color;
+            out.light_factor = (Color){1, 1, 1, 1};
+            out.uv = raw_v.uv;
+            ctx->out_vertices[i] = out;
+        } else if (ctx->drawing_mode == PIXEL_RENDER) {
+            ctx->out_vertices[i] = Pixel_ComputeVertexOutput(screen_pos, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v);
+        }
+    }
+    // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
+
+    // =========================================================================
+    // PHASE 2: Triangle Traversal, Culling, and Drawing Dispatch
+    // =========================================================================
     for (int i = 0; i < mesh->triangle_count; i++) {
         PixelTriangle tri = mesh->triangles[i];
 
-        // Getting the 3 Vertices of the currently drawing triangle
-        PixelVertex v0 = mesh->vertices[tri.vertices[0]];
-        PixelVertex v1 = mesh->vertices[tri.vertices[1]];
-        PixelVertex v2 = mesh->vertices[tri.vertices[2]];
+        // Fetch precomputed vertex outputs using indices
+        VertexOutput out0 = ctx->out_vertices[tri.vertices[0]];
+        VertexOutput out1 = ctx->out_vertices[tri.vertices[1]];
+        VertexOutput out2 = ctx->out_vertices[tri.vertices[2]];
 
-        // Transforming local coordinates to Screen Space
-        Vec3 s0 = TransformVertexToScreen(v0.coordinate, mvp, ctx->width, ctx->height);
-        Vec3 s1 = TransformVertexToScreen(v1.coordinate, mvp, ctx->width, ctx->height);
-        Vec3 s2 = TransformVertexToScreen(v2.coordinate, mvp, ctx->width, ctx->height);
+        // Backface Culling Check (Using Screen Space Area from precomputed positions)
+        float area = (out1.screen_pos.x - out0.screen_pos.x) * (out2.screen_pos.y - out0.screen_pos.y) -
+                     (out1.screen_pos.y - out0.screen_pos.y) * (out2.screen_pos.x - out0.screen_pos.x);
 
-        float area = (s1.x - s0.x) * (s2.y - s0.y) - (s1.y - s0.y) * (s2.x - s0.x);
+        if (ctx->cull_backface && area >= 0.0f) continue; // Counter-clockwise front-face culling
 
-        // one sign means it's facing away from the screen.
-        // If area >= 0 (since using counter-clockwise front faces) skip it
-        if (area >= 0.0f) {
-            continue;
-        }
+        // ctx->benchmark.drawn_traingle_count++;
 
-        // Switching the drawing style based on the context drawing mode
         switch (ctx->drawing_mode) {
-            case PIXEL_VERTEX:
-                Pixel_PutPixel(ctx, s0.x, s0.y, Pixel_Color2Uint32(v0.color));
-                Pixel_PutPixel(ctx, s1.x, s1.y, Pixel_Color2Uint32(v1.color));
-                Pixel_PutPixel(ctx, s2.x, s2.y, Pixel_Color2Uint32(v2.color));
+            case PIXEL_VERTEX: {
+                Pixel_PutPixel(ctx, (uint32_t)out0.screen_pos.x, (uint32_t)out0.screen_pos.y, Pixel_Color2Uint32(out0.base_color));
+                Pixel_PutPixel(ctx, (uint32_t)out1.screen_pos.x, (uint32_t)out1.screen_pos.y, Pixel_Color2Uint32(out1.base_color));
+                Pixel_PutPixel(ctx, (uint32_t)out2.screen_pos.x, (uint32_t)out2.screen_pos.y, Pixel_Color2Uint32(out2.base_color));
                 break;
-            case PIXEL_WIREFRAME:
-                Pixel_DrawTriangleLines(ctx, s0.x, s0.y, s1.x, s1.y, s2.x, s2.y, WHITE);
+            }
+            case PIXEL_WIREFRAME: {
+                Pixel_DrawLine(ctx, (uint32_t)out0.screen_pos.x, (uint32_t)out0.screen_pos.y, (uint32_t)out1.screen_pos.x, (uint32_t)out1.screen_pos.y, out0.base_color);
+                Pixel_DrawLine(ctx, (uint32_t)out1.screen_pos.x, (uint32_t)out1.screen_pos.y, (uint32_t)out2.screen_pos.x, (uint32_t)out2.screen_pos.y, out1.base_color);
+                Pixel_DrawLine(ctx, (uint32_t)out2.screen_pos.x, (uint32_t)out2.screen_pos.y, (uint32_t)out0.screen_pos.x, (uint32_t)out0.screen_pos.y, out2.base_color);
                 break;
-
-            // NOTE: The above draw_modes does not use z_buffers yet, cause the methods used here doesn't either
+            }
             case PIXEL_SOLID:
             case PIXEL_RENDER:
-                Pixel_DrawTriangleDepthColor(ctx,
-                    s0.x, s0.y,
-                    s1.x, s1.y,
-                    s2.x, s2.y,
-                    v0.color, v1.color, v2.color,
-                    s0.z, s1.z, s2.z
-                );
+            default: {
+                Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
                 break;
-            default:
-                printf("Invalid Drawing Mode.");
-                exit(1);
+            }
         }
     }
+
+    // ctx->benchmark.mesh_rendering += Pixel_TimerElapsedMs(&timer);
 }
 
-void Pixel_RenderScene(PixelContext *ctx, const PixelInstance *scene, int instance_count, Mat4 view, Mat4 projection) {
-    if (!ctx || !scene) return;
-    for (int i = 0; i < instance_count; i++) {
-        if (scene[i].mesh == NULL) continue;
-        Pixel_DrawMesh(ctx, scene[i].mesh, scene[i].transform, view, projection);
+void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Mat4 projection) {
+    if (!ctx || !scene)
+        return;
+
+    // PixelTimer timer = Pixel_TimerStart();
+
+    // Dynamically allocate or use a safe stack/heap buffer for view lights to prevent overflow
+    Light *view_lights = NULL;
+    if (scene->light_count > 0) {
+        view_lights = (Light *)malloc(sizeof(Light) * scene->light_count);
+        if (!view_lights) return;
+        Pixel_PrepareLights(scene->lights, view_lights, scene->light_count, view);
+        // ctx->benchmark.light_transformation += Pixel_TimerElapsedMs(&timer);
     }
+
+    // Loop through all instances in the scene array
+    for (int i = 0; i < scene->instance_count; i++) {
+        const PixelInstance *inst = &scene->instances[i];
+        if (inst->mesh == NULL)
+            continue;
+
+        // Draw each mesh using its stored transform, material, view, projection, and prepared lights
+        // ctx->benchmark.vertex_count += inst->mesh->vertex_count;
+        // ctx->benchmark.triangle_count += inst->mesh->triangle_count;
+        Pixel_DrawMesh(ctx, inst->mesh, inst->transform, view, projection, view_lights, scene->light_count, inst->material);
+    }
+
+    if (view_lights) {
+        free(view_lights);
+    }
+
+    // ctx->benchmark.scene_rendering += Pixel_TimerElapsedMs(&timer);
+    // // printf("[Render Scene]: %f\n", Pixel_TimerElapsedMs(&timer));
+
+
+    // Pixel_PrintBenchmark(ctx);
+
 }
 
 /* --- End pixel_renderer.cpp --- */

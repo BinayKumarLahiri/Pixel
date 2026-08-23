@@ -1,6 +1,9 @@
 #include "pixel.h"
 #include <cmath>
 
+// Helper to access column-major layout: col * 4 + row
+#define MAT4_IDX(col, row) ((col) * 4 + (row))
+
 // -----------------------------------------------------------------
 // Vector and Maths Related stuff
 // -----------------------------------------------------------------
@@ -114,6 +117,84 @@ Vec4 Pixel_Mat4MulVec4(Mat4 mat, Vec4 vec) {
   return result;
 }
 
+Vec3 Pixel_Mat4MulVec3(Mat4 mat, Vec3 vec) {
+    Vec4 v = Pixel_Mat4MulVec4(mat, {vec.x, vec.y, vec.z, 0});
+    return {v.x, v.y, v.z};
+}
+
+
+// Helper to compute the determinant of a 3x3 submatrix from a 16-element column-major array
+static float Pixel_Mat3DetFromMat4(const float *m, int skip_col, int skip_row) {
+    float sub[3][3];
+    int r_idx = 0;
+    for (int r = 0; r < 4; r++) {
+        if (r == skip_row) continue;
+        int c_idx = 0;
+        for (int c = 0; c < 4; c++) {
+            if (c == skip_col) continue;
+            sub[r_idx][c_idx] = m[MAT4_IDX(c, r)];
+            c_idx++;
+        }
+        r_idx++;
+    }
+    return sub[0][0] * (sub[1][1] * sub[2][2] - sub[1][2] * sub[2][1]) -
+           sub[0][1] * (sub[1][0] * sub[2][2] - sub[1][2] * sub[2][0]) +
+           sub[0][2] * (sub[1][0] * sub[2][1] - sub[1][1] * sub[2][0]);
+}
+
+// Compute the Transpose of a column-major 4x4 matrix
+Mat4 Pixel_Mat4Transpose(Mat4 mat) {
+    Mat4 result;
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            result.m[MAT4_IDX(c, r)] = mat.m[MAT4_IDX(r, c)];
+        }
+    }
+    return result;
+}
+
+// Compute the Inverse of a column-major 4x4 matrix using adjugate/cofactor method
+Mat4 Pixel_Mat4Inverse(Mat4 mat) {
+    Mat4 inv;
+    float det = 0.0f;
+
+    // Compute cofactor expansion / adjugate matrix
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            int sign = ((r + c) % 2 == 0) ? 1 : -1;
+            float sub_det = Pixel_Mat3DetFromMat4(mat.m, c, r);
+
+            // In a column-major inverse, the transpose of the cofactor matrix is built into placement:
+            // inv.m[MAT4_IDX(r, c)] corresponds to row r, col c in mathematical terms
+            inv.m[MAT4_IDX(r, c)] = (float)sign * sub_det;
+        }
+    }
+
+    // Calculate full 4x4 determinant using the first column expansion
+    for (int r = 0; r < 4; r++) {
+        det += mat.m[MAT4_IDX(0, r)] * inv.m[MAT4_IDX(r, 0)]; // Using cofactors of column 0
+    }
+
+    // Handle degenerate/non-invertible matrices safely
+    if (fabsf(det) < 0.00001f) {
+        Mat4 identity = {0};
+        for (int i = 0; i < 4; i++) {
+            identity.m[MAT4_IDX(i, i)] = 1.0f;
+        }
+        return identity;
+    }
+
+    float inv_det = 1.0f / det;
+
+    // Multiply by 1 / determinant
+    for (int i = 0; i < 16; i++) {
+        inv.m[i] *= inv_det;
+    }
+
+    return inv;
+}
+
+
 
 // Transformation Matrices
 Mat4 Pixel_Mat4ScaleMatrix(Vec3 scale_factor) {
@@ -175,16 +256,24 @@ Mat4 Pixel_Mat4RotationMatrixXYZ(Vec3 angles_XYZ) {
   Mat4 x_rotate = Pixel_Mat4RotationMatrixX(angles_XYZ.x);
   Mat4 y_rotate = Pixel_Mat4RotationMatrixY(angles_XYZ.y);
   Mat4 z_rotate = Pixel_Mat4RotationMatrixZ(angles_XYZ.z);
-  Mat4 result = Pixel_Mat4Mul(x_rotate, Pixel_Mat4Mul(y_rotate, z_rotate));
+  Mat4 result = Pixel_Mat4Mul(z_rotate, Pixel_Mat4Mul(y_rotate, x_rotate));
+  return result;
+}
+
+static Mat4 Pixel_Mat4RotationMatrixZYX(Vec3 angles_XYZ) {
+  Mat4 x_rotate = Pixel_Mat4RotationMatrixX(angles_XYZ.x);
+  Mat4 y_rotate = Pixel_Mat4RotationMatrixY(angles_XYZ.y);
+  Mat4 z_rotate = Pixel_Mat4RotationMatrixZ(angles_XYZ.z);
+  Mat4 result = Pixel_Mat4Mul(z_rotate, Pixel_Mat4Mul(y_rotate, x_rotate));
   return result;
 }
 
 Mat4 Pixel_Mat4ViewMatrixTRS(Vec3 position, Vec3 angles_XYZ) {
   Vec3 inverted_rotation = {-angles_XYZ.x, -angles_XYZ.y, -angles_XYZ.z};
   Vec3 inverted_translation = {-position.x, -position.y, -position.z};
-  Mat4 rotation = Pixel_Mat4RotationMatrixXYZ(inverted_rotation);
+  Mat4 rotation = Pixel_Mat4RotationMatrixZYX(inverted_rotation);
   Mat4 translation = Pixel_Mat4TranslationMatrix(inverted_translation);
-  Mat4 view_matrix = Pixel_Mat4Mul(translation, rotation);
+  Mat4 view_matrix = Pixel_Mat4Mul(rotation, translation);
   return view_matrix;
 }
 
@@ -201,4 +290,9 @@ Mat4 Pixel_Mat4PerspectiveProjectionMatrix(float fov_radians, float aspect_ratio
     result.m[14] = (near_plane * far_plane) / (near_plane - far_plane);
 
     return result;
+}
+
+Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix) {
+    Mat4 inv_mv = Pixel_Mat4Inverse(mv_matrix);
+    return Pixel_Mat4Transpose(inv_mv);
 }

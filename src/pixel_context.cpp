@@ -26,11 +26,17 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   pixelContext->back_buffer =
       (uint32_t *)malloc(width * height * sizeof(uint32_t));
   pixelContext->depth_buffer = (float *)malloc(width * height * sizeof(float));
+  pixelContext->out_vertices = (VertexOutput *)malloc(256 * sizeof(VertexOutput));
+  pixelContext->out_vertices_capacity = 256;
 
   for(int i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
   // The default DrawMode of the library is set to PixelRender i.e.
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
+  pixelContext->cull_backface = true;
+
+  pixelContext->benchmark = {0};
+
   return pixelContext;
 }
 
@@ -44,6 +50,7 @@ void Pixel_Destroy(PixelContext *ctx) {
   // Free the memory assigned by the Initialization
   free(ctx->back_buffer);
   free(ctx->depth_buffer);
+  free(ctx->out_vertices);
   // Free the PixelContext itself
   free(ctx);
 }
