@@ -1,5 +1,6 @@
 #include "pixel.h"
 #include <cmath>
+#include <cstdint>
 
 // -----------------------------------------------------------------
 // Primitive Shapes Drawing Methods
@@ -201,6 +202,20 @@ void Pixel_DrawFilledRectangle(PixelContext *ctx, int x0, int y0,
       Pixel_PutPixel(ctx, x, y, fill_color);
     }
   }
+}
+
+void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0,
+                               uint32_t width, uint32_t height, PixelTexture *texture) {
+    for(uint32_t dy = 0;dy < height; ++dy) {
+        for(uint32_t dx = 0; dx < width; ++dx) {
+            uint32_t x = x0 + dx;
+            uint32_t y = y0 + dy;
+            float u = (float)dx/(float)width;
+            float v = (float)dy/(float)height;
+            uint32_t color = Pixel_SampleTextureUint32(texture, u, v);
+            Pixel_PutPixel(ctx, x, y, color);
+        }
+    }
 }
 
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,

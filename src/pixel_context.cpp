@@ -34,6 +34,7 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
   pixelContext->cull_backface = true;
+  pixelContext->enable_lighting = true;
 
   pixelContext->benchmark = {0};
 

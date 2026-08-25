@@ -8,6 +8,8 @@ extern "C" {
 #endif
 
 
+#define MAX_READ_BUFFER_SIZE 4096
+
 typedef struct {
     struct timespec start_time;
 } PixelTimer;
@@ -27,6 +29,7 @@ void Pixel_CreateDirectories(const char *path);
 
 #define PIXEL_PI 3.14159265359
 #define PIXEL_PIBY2 1.570796326795
+
 
 // Simple Linear Interpolation function for the Pixel Library
 float Pixel_Max(float val1, float val2);
@@ -144,6 +147,16 @@ typedef enum {
   PIXEL_RENDER // Total rendering mode
 } DrawMode;
 
+// 1. Texture Struct Definition
+typedef struct {
+    uint32_t *pixels; // RGBA pixel data buffer
+    int width;
+    int height;
+} PixelTexture;
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
+uint32_t Pixel_SampleTextureUint32(PixelTexture *texture, float x, float y);
+
 typedef struct {
     // Benchmarking values
     int vertex_count;
@@ -171,6 +184,8 @@ typedef struct {
     Vec3 screen_pos;    // Screen space position (x, y, z)
     Vec3 view_pos;      // View space position
     Vec3 view_normal;   // View space normal
+    float clip_w;
+    float inv_w;
     Color light_factor;  // Pre-calculated lighting accumulation (RGB)
     Vec2 uv;            // Texture coordinates
     Color base_color;   // Base vertex/material color
@@ -187,6 +202,7 @@ typedef struct {
   // for controlling how the primitives and triangles are drawn
   DrawMode drawing_mode;
   bool cull_backface;
+  bool enable_lighting;
   Benchmark benchmark;
 
   VertexOutput *out_vertices;
@@ -241,6 +257,7 @@ void Pixel_DrawRectangle(PixelContext *ctx, int x0, int y0, uint32_t width,
                          uint32_t height, Color color);
 void Pixel_DrawFilledRectangle(PixelContext *ctx, int x0, int y0,
                                uint32_t width, uint32_t height, Color color);
+void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0, uint32_t width, uint32_t height, PixelTexture *texture);
 
 // Triangles
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
@@ -272,12 +289,8 @@ typedef struct {
   uint32_t color;
 } PixelTriangle;
 
-// 1. Texture Struct Definition
-typedef struct {
-    uint32_t *pixels; // RGBA pixel data buffer
-    int width;
-    int height;
-} PixelTexture;
+
+
 
 typedef struct {
   PixelVertex *vertices;
@@ -335,7 +348,6 @@ typedef struct {
 } PixelInterpolatedAttributes;
 
 
-Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
 
 // 2. Updated PixelInstance Struct (Containing Mesh, Transform, Material, and Texture)
 typedef struct {
@@ -362,6 +374,7 @@ void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Ma
 
 PixelMesh CreateCubeMesh();
 PixelMesh CreateSphereMesh(float radius, int lats, int longs);
+PixelMesh Pixel_LoadObjMesh(const char *file_name);
 
 #ifdef __cplusplus
 }
