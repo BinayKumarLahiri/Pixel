@@ -86,6 +86,8 @@ SRC_DIR := src
 BUILD_DIR := build
 PIXEL_BUILD_DIR := $(BUILD_DIR)/pixel
 APPS_DIR := apps
+TEST_APP_DIR := $(APPS_DIR)/test_app
+FENSTER_APP_DIR := $(APPS_DIR)/fenster_demo
 
 # --- Find Sources and Define Objects ---
 # Find all C and C++ files in the src directory
@@ -107,6 +109,20 @@ APPS := $(filter-out $(APPS_DIR)/common, $(wildcard $(APPS_DIR)/*))
 .PHONY: all lib dist clean $(APPS)
 
 all: lib $(APPS)
+
+test_app: lib
+	@echo "--- Building App: test_app ---"
+	@mkdir -p $(BUILD_DIR)/test_app
+	@$(MAKE) -C $(TEST_APP_DIR)
+	@echo "--- Cleaning App: test_app ---"
+	@$(MAKE) -C $(TEST_APP_DIR) clean
+
+fenster_app: lib
+	@echo "--- Building App: test_app ---"
+	@mkdir -p $(BUILD_DIR)/test_app
+	@$(MAKE) -C $(FENSTER_APP_DIR)
+	@echo "--- Cleaning App: test_app ---"
+	@$(MAKE) -C $(FENSTER_APP_DIR) clean
 
 apps: $(APPS)
 

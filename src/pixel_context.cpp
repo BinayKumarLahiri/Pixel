@@ -33,6 +33,7 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   // The default DrawMode of the library is set to PixelRender i.e.
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
+  pixelContext->filter_mode = PIXEL_BILINEAR;
   pixelContext->cull_backface = true;
   pixelContext->enable_lighting = true;
 

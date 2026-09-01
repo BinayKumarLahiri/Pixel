@@ -147,6 +147,11 @@ typedef enum {
   PIXEL_RENDER // Total rendering mode
 } DrawMode;
 
+typedef enum {
+    PIXEL_NEAREST = 0,
+    PIXEL_BILINEAR
+} FilterMode;
+
 // 1. Texture Struct Definition
 typedef struct {
     uint32_t *pixels; // RGBA pixel data buffer
@@ -154,8 +159,7 @@ typedef struct {
     int height;
 } PixelTexture;
 
-Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
-uint32_t Pixel_SampleTextureUint32(PixelTexture *texture, float x, float y);
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y, FilterMode filter_mode);
 
 typedef struct {
     // Benchmarking values
@@ -201,6 +205,7 @@ typedef struct {
   // Different rendering mode used in the drawing functions and rendering loop
   // for controlling how the primitives and triangles are drawn
   DrawMode drawing_mode;
+  FilterMode filter_mode;
   bool cull_backface;
   bool enable_lighting;
   Benchmark benchmark;

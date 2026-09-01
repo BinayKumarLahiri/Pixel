@@ -25,16 +25,74 @@ float Pixel_TimerElapsedMs(PixelTimer* timer) {
 // -----------------------------------------------------------------
 // 3D Rendering Related stuff (Vertex, Mesh, etc.)
 // -----------------------------------------------------------------
-Color Pixel_SampleTexture(PixelTexture *texture, float x, float y) {
-    int tex_x = (int)(texture->width * x);
-    int tex_y = (int)(texture->height * y);
-    return Pixel_Uint322Color(texture->pixels[tex_x * texture->width + tex_y]);
+static Color Pixel_SampleTextureNearest(PixelTexture *texture, float x, float y) {
+    // int tex_x = (int)(texture->width * x);
+    // int tex_y = (int)(texture->height * y);
+    // return Pixel_Uint322Color(texture->pixels[tex_x * texture->width + tex_y]);
+    if(!texture || !texture->pixels)
+            return WHITE;
+
+    x = Pixel_Max(0.0f, Pixel_Min(1.0f, x));
+    y = Pixel_Max(0.0f, Pixel_Min(1.0f, y));
+
+    int u = (int)(x * (texture->width  - 1));
+    int v = (int)(y * (texture->height - 1));
+
+    return Pixel_Uint322Color(
+        texture->pixels[v * texture->width + u]
+    );
 }
 
-uint32_t Pixel_SampleTextureUint32(PixelTexture *texture, float x, float y) {
-    int tex_x = (int)((texture->width-1) * x);
-    int tex_y = (int)((texture->height-1) * y);
-    return texture->pixels[tex_y * texture->width + tex_x];
+static Color Pixel_SampleTextureBiLinear(PixelTexture *texture, float x, float y) {
+    if(!texture || !texture->pixels) return WHITE;
+    x = Pixel_Max(0.0f, Pixel_Min(1.0f, x));
+    y = Pixel_Max(0.0f, Pixel_Min(1.0f, y));
+
+    float u = x * (texture->width - 1);
+    float v = y * (texture->height - 1);
+
+    int int_u = (int)u;
+    int int_v = (int)v;
+    int next_u = (int_u + 1 >= texture->width ? texture->width-1 : int_u + 1);
+    int next_v = (int_v + 1 >= texture->height ? texture->height-1 : int_v + 1);
+
+    float u_ratio = u - (int)u;
+    float v_ratio = v - (int)v;
+
+    Color top_left = Pixel_Uint322Color(texture->pixels[int_v * texture->width + int_u]);
+    Color top_right = Pixel_Uint322Color(texture->pixels[int_v * texture->width + next_u]);
+    Color bottom_right = Pixel_Uint322Color(texture->pixels[next_v * texture->width + next_u]);
+    Color bottom_left = Pixel_Uint322Color(texture->pixels[next_v * texture->width + int_u]);
+
+
+    Color top = {
+        top_right.r * u_ratio + top_left.r * (1-u_ratio),
+        top_right.g * u_ratio + top_left.g * (1-u_ratio),
+        top_right.b * u_ratio + top_left.b * (1-u_ratio),
+        255.0f
+    };
+
+    Color bottom = {
+        bottom_right.r * u_ratio + bottom_left.r * (1-u_ratio),
+        bottom_right.g * u_ratio + bottom_left.g * (1-u_ratio),
+        bottom_right.b * u_ratio + bottom_left.b * (1-u_ratio),
+        255.0f
+    };
+
+    Color color = {
+        top.r * (1-v_ratio) + bottom.r * v_ratio,
+        top.g * (1-v_ratio) + bottom.g * v_ratio,
+        top.b * (1-v_ratio) + bottom.b * v_ratio,
+        255.0f
+    };
+
+    return color;
+}
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y, FilterMode filter_mode) {
+    if(filter_mode == PIXEL_NEAREST) return Pixel_SampleTextureNearest(texture, x, y);
+    else if(filter_mode == PIXEL_BILINEAR) return Pixel_SampleTextureBiLinear(texture, x, y);
+    else return Pixel_SampleTextureBiLinear(texture, x, y);
 }
 
 // Transform world lights to View Space once per frame
@@ -246,7 +304,7 @@ static void Pixel_InterpolateAttributes(
 static uint32_t Pixel_ShadeFragment(PixelContext *ctx, const PixelTexture *texture, bool use_texture, PixelInterpolatedAttributes *interpolated_attr) {
     Color surface_color;
     if (use_texture && texture) {
-        surface_color = Pixel_SampleTexture((PixelTexture*)texture, interpolated_attr->uv.x, interpolated_attr->uv.y);
+        surface_color = Pixel_SampleTexture((PixelTexture*)texture, interpolated_attr->uv.x, interpolated_attr->uv.y, ctx->filter_mode);
     } else {
         surface_color = interpolated_attr->base;
     }

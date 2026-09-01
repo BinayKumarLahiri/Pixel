@@ -212,7 +212,7 @@ void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0,
             uint32_t y = y0 + dy;
             float u = (float)dx/(float)width;
             float v = (float)dy/(float)height;
-            uint32_t color = Pixel_SampleTextureUint32(texture, u, v);
+            uint32_t color = Pixel_Color2Uint32(Pixel_SampleTexture(texture, u, v, ctx->filter_mode));
             Pixel_PutPixel(ctx, x, y, color);
         }
     }
