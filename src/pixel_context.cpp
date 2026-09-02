@@ -29,14 +29,13 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   pixelContext->out_vertices = (VertexOutput *)malloc(256 * sizeof(VertexOutput));
   pixelContext->out_vertices_capacity = 256;
 
-  for(int i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
+  for(uint32_t i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
   // The default DrawMode of the library is set to PixelRender i.e.
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
   pixelContext->filter_mode = PIXEL_BILINEAR;
   pixelContext->cull_backface = true;
   pixelContext->enable_lighting = true;
-
   pixelContext->benchmark = {0};
 
   return pixelContext;

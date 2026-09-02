@@ -4,6 +4,7 @@ TARGET = ../../build/fenster_demo/fenster_demo.exe
 # 2. Paths pointing to the shared app dependencies directory
 COMMON_DIR = ../common
 FENSTER_DIR = $(COMMON_DIR)/fenster
+STB_IMAGE_DIR = $(COMMON_DIR)/stb_image
 
 # Only main.o is needed since fenster is header-only
 OBJS = main.o
@@ -16,7 +17,7 @@ LIB_OBJS = ../../build/pixel/*.o
 
 # Compiler and flags
 CXX = g++
-CXXFLAGS = -Wall -O2 -std=c++11 -I$(FENSTER_DIR)
+CXXFLAGS = -Wall -O2 -std=c++11 -I$(COMMON_DIR)
 
 # Windows-specific library for fenster Win32 API system calls
 LIBS = -lgdi32

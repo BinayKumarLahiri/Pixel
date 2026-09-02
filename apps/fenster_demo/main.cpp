@@ -2,11 +2,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+
 #define FENSTER_IMPLEMENTATION
 #include "fenster.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "../../src/stb_image.h"
+#include "stb_image.h"
 
 #define WIDTH 600
 #define HEIGHT 800
@@ -57,14 +58,12 @@ uint32_t *load_image_as_argb(const char *filename, int *out_width,
 
   return argb_buffer;
 }
-float deg_to_rad(float deg) {
-    return deg * PIXEL_PI / 180;
-}
-
+float deg_to_rad(float deg) { return deg * PIXEL_PI / 180; }
 
 int main() {
-  uint32_t *buf = (uint32_t*)malloc(WIDTH * HEIGHT * sizeof(uint32_t));
-  struct fenster f = { .title = "hello", .width = WIDTH, .height = HEIGHT, .buf = buf };
+  uint32_t *buf = (uint32_t *)malloc(WIDTH * HEIGHT * sizeof(uint32_t));
+  struct fenster f = {
+      .title = "hello", .width = WIDTH, .height = HEIGHT, .buf = buf};
 
   PixelContext *canvas = Pixel_Init(buf, WIDTH, HEIGHT);
   if (!canvas) {
@@ -144,56 +143,66 @@ int main() {
   scene.lights = scene_lights;
   scene.light_count = 4;
 
-  Mat4 view_matrix = Pixel_Mat4ViewMatrixTRS({0.0f, 0.0f, -0.0f}, {0.0f, 0.0f, 0.0f});
+  Mat4 view_matrix =
+      Pixel_Mat4ViewMatrixTRS({0.0f, 0.0f, -0.0f}, {0.0f, 0.0f, 0.0f});
 
   float fov = 60.0f;
   float fov_rad = fov * (PIXEL_PI / 180.0f);
   float aspect = (float)WIDTH / (float)HEIGHT;
-  Mat4 proj_matrix = Pixel_Mat4PerspectiveProjectionMatrix(fov_rad, aspect, 0.1f, 100.0f);
+  Mat4 proj_matrix =
+      Pixel_Mat4PerspectiveProjectionMatrix(fov_rad, aspect, 0.1f, 100.0f);
 
   const float TARGET_FRAME_MS = 1000.0f / TARGET_FPS;
-   fenster_open(&f);
+  fenster_open(&f);
 
-   float max_fps = 0.0f;
-   float min_fps = 1000000.0f; // Initialize to a very high number
-   int frame_count = 0;
+  float max_fps = 0.0f;
+  float min_fps = 1000000.0f; // Initialize to a very high number
+  int frame_count = 0;
 
-   while (fenster_loop(&f) == 0) {
-       // 1. Start the timer at the beginning of the frame
-       PixelTimer frame_timer = Pixel_TimerStart();
+  while (fenster_loop(&f) == 0) {
+    // 1. Start the timer at the beginning of the frame
+    PixelTimer frame_timer = Pixel_TimerStart();
 
-       // --- Game Logic & Update ---
-       rotation_deg += rotation_speed;
-       rotation_deg = rotation_deg >= 360.f ? 0.0f : rotation_deg;
-       elve.transform.rotation.y = deg_to_rad(rotation_deg);
+    // --- Game Logic & Update ---
+    rotation_deg += rotation_speed;
+    rotation_deg = rotation_deg >= 360.f ? 0.0f : rotation_deg;
+    elve.transform.rotation.y = deg_to_rad(rotation_deg);
 
-       // --- Render Processing ---
-       Pixel_Clear(canvas, 0xff000000); // Dark gray background
-       Pixel_RenderScene(canvas, &scene, view_matrix, proj_matrix);
-       Pixel_SwapBuffers(canvas);
+    // --- Render Processing ---
+    Pixel_Clear(canvas, 0xff000000); // Dark gray background
+    Pixel_RenderScene(canvas, &scene, view_matrix, proj_matrix);
 
-       // Measure exact time taken for logic and rendering
-       float frame_time_ms = Pixel_TimerElapsedMs(&frame_timer);
+    // Measure exact time taken for logic and rendering
+    float frame_time_ms = Pixel_TimerElapsedMs(&frame_timer);
 
-       if (frame_time_ms > 0.0f) {
-           float current_fps = 1000.0f / frame_time_ms;
+    Pixel_PutText(canvas, 10, 10, PIXEL_DEFAULT_FONT, WHITE, 1,
+                  "Model Name: Elve.obj\nVertices Count: 61275\nTriangle "
+                  "Count: 20419\nFPS: %f",
+                  (1000.0f / frame_time_ms));
+    Pixel_SwapBuffers(canvas);
 
-           // Track max and min FPS (skipping the first couple frames if they spike during startup)
-           if (frame_count > 5) {
-               if (current_fps > max_fps) max_fps = current_fps;
-               if (current_fps < min_fps) min_fps = current_fps;
-           }
-       }
-       frame_count++;
+    if (frame_time_ms > 0.0f) {
+      float current_fps = 1000.0f / frame_time_ms;
 
-       // 2. Lock the frame rate: wait out the remaining time
-       while (Pixel_TimerElapsedMs(&frame_timer) < TARGET_FRAME_MS) {
-           // Busy-wait loop to precisely hold the frame rate.
-       }
-   }
+      // Track max and min FPS (skipping the first couple frames if they spike
+      // during startup)
+      if (frame_count > 5) {
+        if (current_fps > max_fps)
+          max_fps = current_fps;
+        if (current_fps < min_fps)
+          min_fps = current_fps;
+      }
+    }
+    frame_count++;
 
-   printf("Max FPS: %.2f | Min FPS: %.2f\n", max_fps, min_fps);
-   fenster_close(&f);
+    // 2. Lock the frame rate: wait out the remaining time
+    while (Pixel_TimerElapsedMs(&frame_timer) < TARGET_FRAME_MS) {
+      // Busy-wait loop to precisely hold the frame rate.
+    }
+  }
+
+  printf("Max FPS: %.2f | Min FPS: %.2f\n", max_fps, min_fps);
+  fenster_close(&f);
   delete[] image;
   Pixel_Destroy(canvas);
   free(buf);

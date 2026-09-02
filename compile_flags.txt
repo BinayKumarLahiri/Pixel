@@ -1,8 +1,8 @@
 -x
 c++
 -std=c++17
+-Iapps/common
 -Iapps/common/imgui
 -Iapps/common/imgui/backends
 -Iapps/common/glfw/include
--Iapps/common/fenster
 -Isrc

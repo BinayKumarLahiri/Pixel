@@ -137,6 +137,8 @@ Color Pixel_Uint322Color(const uint32_t color);
 Color Pixel_ColorScale(const Color color, float brightness);
 Color Pixel_ColorBlend(const Color color1, const Color color2, float alpha);
 
+
+
 // -----------------------------------------------------------------
 // Rendering and PixelContext based structs
 // -----------------------------------------------------------------
@@ -226,6 +228,17 @@ void Pixel_Clear(PixelContext *ctx, uint32_t color);
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color);
 void Pixel_SaveBMP(PixelContext *ctx, const char *filename);
 void Pixel_PrintBenchmark(PixelContext* ctx);
+
+
+// -------------------------------------------------------------------------------
+// Simple 8x8 Bitmap font rendering for primitive text Drawing (Only ASCII Values)
+// -------------------------------------------------------------------------------
+extern unsigned char PIXEL_DEFAULT_FONT[128][8];
+
+void Pixel_PutChar(PixelContext* ctx, const char c, int cx, int cy, const unsigned char font[128][8], Color color, int scale);
+void Pixel_PutText(PixelContext* ctx, int tx, int ty, const unsigned char font[128][8], Color color, int scale, const char* format, ...);
+
+
 
 // -----------------------------------------------------------------
 // Simple primitives
@@ -380,6 +393,9 @@ void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Ma
 PixelMesh CreateCubeMesh();
 PixelMesh CreateSphereMesh(float radius, int lats, int longs);
 PixelMesh Pixel_LoadObjMesh(const char *file_name);
+
+
+
 
 #ifdef __cplusplus
 }
