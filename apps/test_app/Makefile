@@ -13,7 +13,7 @@ STB_TARGET = ../../build/test_app/test_app
 LIB_OBJS = ../../build/pixel/*.o
 
 CXX = g++
-CXXFLAGS = -Wall -O2 -static -static-libgcc -static-libstdc++
+CXXFLAGS = -Wall -O2 -static -static-libgcc -static-libstdc++ -I../common
 
 $(TARGET): $(OBJS)
 	$(CXX) $(OBJS) $(LIB_OBJS) -o $(TARGET)

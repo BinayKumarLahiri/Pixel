@@ -75,7 +75,8 @@ void Pixel_Clear(PixelContext *ctx, uint32_t color) {
 
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color) {
   if (x < ctx->width && y < ctx->height) {
-    ctx->back_buffer[y * ctx->width + x] = color;
+    // ctx->back_buffer[y * ctx->width + x] = color;
+    ctx->back_buffer[y * ctx->width + x] = Pixel_AlphaBlendUint32(color, ctx->back_buffer[y * ctx->width + x]);
   }
 }
 

@@ -136,6 +136,8 @@ uint32_t Pixel_Color2Uint32(const Color color);
 Color Pixel_Uint322Color(const uint32_t color);
 Color Pixel_ColorScale(const Color color, float brightness);
 Color Pixel_ColorBlend(const Color color1, const Color color2, float alpha);
+Color Pixel_AlphaBlend(const Color source, const Color destination);
+uint32_t Pixel_AlphaBlendUint32(const uint32_t source, const uint32_t destination);
 
 
 
@@ -283,6 +285,8 @@ void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
 void Pixel_DrawTriangleShaded(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color0, Color color1,
                               Color color2, float h0, float h1, float h2);
+void Pixel_DrawTriangleTexture(PixelContext *ctx, int x0, int y0, int x1, int y1,
+                              int x2, int y2, PixelTexture *texture, float u0, float v0, float u1, float v1, float u2, float v2, FilterMode filter_mode);
 void Pixel_DrawTriangleFilled(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color);
 void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point2,
@@ -290,6 +294,7 @@ void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point2,
 void Pixel_DrawTriangleDepthColor(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color0, Color color1,
                               Color color2, float z0, float z1, float z2);
+
 
 // -----------------------------------------------------------------
 // 3D Rendering Related stuff (Vertex, Mesh, )

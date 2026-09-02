@@ -33,6 +33,8 @@ extern "C" {
 #endif
 
 
+#define MAX_READ_BUFFER_SIZE 4096
+
 typedef struct {
     struct timespec start_time;
 } PixelTimer;
@@ -52,6 +54,7 @@ void Pixel_CreateDirectories(const char *path);
 
 #define PIXEL_PI 3.14159265359
 #define PIXEL_PIBY2 1.570796326795
+
 
 // Simple Linear Interpolation function for the Pixel Library
 float Pixel_Max(float val1, float val2);
@@ -159,6 +162,8 @@ Color Pixel_Uint322Color(const uint32_t color);
 Color Pixel_ColorScale(const Color color, float brightness);
 Color Pixel_ColorBlend(const Color color1, const Color color2, float alpha);
 
+
+
 // -----------------------------------------------------------------
 // Rendering and PixelContext based structs
 // -----------------------------------------------------------------
@@ -168,6 +173,20 @@ typedef enum {
   PIXEL_SOLID, // Drawing the solid colors ignoring the shading and lighting
   PIXEL_RENDER // Total rendering mode
 } DrawMode;
+
+typedef enum {
+    PIXEL_NEAREST = 0,
+    PIXEL_BILINEAR
+} FilterMode;
+
+// 1. Texture Struct Definition
+typedef struct {
+    uint32_t *pixels; // RGBA pixel data buffer
+    int width;
+    int height;
+} PixelTexture;
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y, FilterMode filter_mode);
 
 typedef struct {
     // Benchmarking values
@@ -196,6 +215,8 @@ typedef struct {
     Vec3 screen_pos;    // Screen space position (x, y, z)
     Vec3 view_pos;      // View space position
     Vec3 view_normal;   // View space normal
+    float clip_w;
+    float inv_w;
     Color light_factor;  // Pre-calculated lighting accumulation (RGB)
     Vec2 uv;            // Texture coordinates
     Color base_color;   // Base vertex/material color
@@ -211,7 +232,9 @@ typedef struct {
   // Different rendering mode used in the drawing functions and rendering loop
   // for controlling how the primitives and triangles are drawn
   DrawMode drawing_mode;
+  FilterMode filter_mode;
   bool cull_backface;
+  bool enable_lighting;
   Benchmark benchmark;
 
   VertexOutput *out_vertices;
@@ -230,6 +253,17 @@ void Pixel_Clear(PixelContext *ctx, uint32_t color);
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color);
 void Pixel_SaveBMP(PixelContext *ctx, const char *filename);
 void Pixel_PrintBenchmark(PixelContext* ctx);
+
+
+// -------------------------------------------------------------------------------
+// Simple 8x8 Bitmap font rendering for primitive text Drawing (Only ASCII Values)
+// -------------------------------------------------------------------------------
+extern unsigned char PIXEL_DEFAULT_FONT[128][8];
+
+void Pixel_PutChar(PixelContext* ctx, const char c, int cx, int cy, const unsigned char font[128][8], Color color, int scale);
+void Pixel_PutText(PixelContext* ctx, int tx, int ty, const unsigned char font[128][8], Color color, int scale, const char* format, ...);
+
+
 
 // -----------------------------------------------------------------
 // Simple primitives
@@ -266,6 +300,7 @@ void Pixel_DrawRectangle(PixelContext *ctx, int x0, int y0, uint32_t width,
                          uint32_t height, Color color);
 void Pixel_DrawFilledRectangle(PixelContext *ctx, int x0, int y0,
                                uint32_t width, uint32_t height, Color color);
+void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0, uint32_t width, uint32_t height, PixelTexture *texture);
 
 // Triangles
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
@@ -297,12 +332,8 @@ typedef struct {
   uint32_t color;
 } PixelTriangle;
 
-// 1. Texture Struct Definition
-typedef struct {
-    uint32_t *pixels; // RGBA pixel data buffer
-    int width;
-    int height;
-} PixelTexture;
+
+
 
 typedef struct {
   PixelVertex *vertices;
@@ -360,7 +391,6 @@ typedef struct {
 } PixelInterpolatedAttributes;
 
 
-Color Pixel_SampleTexture(PixelTexture *texture, float x, float y);
 
 // 2. Updated PixelInstance Struct (Containing Mesh, Transform, Material, and Texture)
 typedef struct {
@@ -387,6 +417,10 @@ void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Ma
 
 PixelMesh CreateCubeMesh();
 PixelMesh CreateSphereMesh(float radius, int lats, int longs);
+PixelMesh Pixel_LoadObjMesh(const char *file_name);
+
+
+
 
 #ifdef __cplusplus
 }
@@ -707,12 +741,13 @@ PixelContext *Pixel_Init(uint32_t *external_buffer, uint32_t width, uint32_t hei
   pixelContext->out_vertices = (VertexOutput *)malloc(256 * sizeof(VertexOutput));
   pixelContext->out_vertices_capacity = 256;
 
-  for(int i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
+  for(uint32_t i=0;i<width*height;++i) pixelContext->depth_buffer[i] = 1.0;
   // The default DrawMode of the library is set to PixelRender i.e.
   // Drawing full lighting, shading, colors as they are intended to be drawn
   pixelContext->drawing_mode = PIXEL_RENDER;
+  pixelContext->filter_mode = PIXEL_BILINEAR;
   pixelContext->cull_backface = true;
-
+  pixelContext->enable_lighting = true;
   pixelContext->benchmark = {0};
 
   return pixelContext;
@@ -804,6 +839,384 @@ void Pixel_SaveBMP(PixelContext *ctx, const char *filename) {
 }
 
 /* --- End pixel_context.cpp --- */
+
+/* --- Begin pixel_font.cpp --- */
+
+#include <cstdarg>
+#include <cstdio>
+
+// unsigned char PIXEL_DEFAULT_FONT[256][8] = {};
+unsigned char PIXEL_DEFAULT_FONT[128][8] = {
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0000 (nul)
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0001
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0002
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0003
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0004
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0005
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0006
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0007
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0008
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0009
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000A
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000B
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000C
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000D
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000E
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+000F
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0010
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0011
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0012
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0013
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0014
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0015
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0016
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0017
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0018
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0019
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001A
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001B
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001C
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001D
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001E
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+001F
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0020 (space)
+    { 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00},   // U+0021 (!)
+    { 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0022 (")
+    { 0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00},   // U+0023 (#)
+    { 0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00},   // U+0024 ($)
+    { 0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00},   // U+0025 (%)
+    { 0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00},   // U+0026 (&)
+    { 0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0027 (')
+    { 0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00},   // U+0028 (()
+    { 0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00},   // U+0029 ())
+    { 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00},   // U+002A (*)
+    { 0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00},   // U+002B (+)
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06},   // U+002C (,)
+    { 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00},   // U+002D (-)
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00},   // U+002E (.)
+    { 0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00},   // U+002F (/)
+    { 0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00},   // U+0030 (0)
+    { 0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00},   // U+0031 (1)
+    { 0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00},   // U+0032 (2)
+    { 0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00},   // U+0033 (3)
+    { 0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00},   // U+0034 (4)
+    { 0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00},   // U+0035 (5)
+    { 0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00},   // U+0036 (6)
+    { 0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00},   // U+0037 (7)
+    { 0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00},   // U+0038 (8)
+    { 0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00},   // U+0039 (9)
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00},   // U+003A (:)
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06},   // U+003B (;)
+    { 0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00},   // U+003C (<)
+    { 0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00},   // U+003D (=)
+    { 0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00},   // U+003E (>)
+    { 0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00},   // U+003F (?)
+    { 0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00},   // U+0040 (@)
+    { 0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00},   // U+0041 (A)
+    { 0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00},   // U+0042 (B)
+    { 0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00},   // U+0043 (C)
+    { 0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00},   // U+0044 (D)
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00},   // U+0045 (E)
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00},   // U+0046 (F)
+    { 0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00},   // U+0047 (G)
+    { 0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00},   // U+0048 (H)
+    { 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   // U+0049 (I)
+    { 0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00},   // U+004A (J)
+    { 0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00},   // U+004B (K)
+    { 0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00},   // U+004C (L)
+    { 0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00},   // U+004D (M)
+    { 0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00},   // U+004E (N)
+    { 0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00},   // U+004F (O)
+    { 0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00},   // U+0050 (P)
+    { 0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00},   // U+0051 (Q)
+    { 0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00},   // U+0052 (R)
+    { 0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00},   // U+0053 (S)
+    { 0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   // U+0054 (T)
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00},   // U+0055 (U)
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},   // U+0056 (V)
+    { 0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00},   // U+0057 (W)
+    { 0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00},   // U+0058 (X)
+    { 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00},   // U+0059 (Y)
+    { 0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00},   // U+005A (Z)
+    { 0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00},   // U+005B ([)
+    { 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00},   // U+005C (\)
+    { 0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00},   // U+005D (])
+    { 0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00},   // U+005E (^)
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF},   // U+005F (_)
+    { 0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+0060 (`)
+    { 0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00},   // U+0061 (a)
+    { 0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00},   // U+0062 (b)
+    { 0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00},   // U+0063 (c)
+    { 0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00},   // U+0064 (d)
+    { 0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00},   // U+0065 (e)
+    { 0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00},   // U+0066 (f)
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F},   // U+0067 (g)
+    { 0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00},   // U+0068 (h)
+    { 0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   // U+0069 (i)
+    { 0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E},   // U+006A (j)
+    { 0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00},   // U+006B (k)
+    { 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   // U+006C (l)
+    { 0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00},   // U+006D (m)
+    { 0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00},   // U+006E (n)
+    { 0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00},   // U+006F (o)
+    { 0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F},   // U+0070 (p)
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78},   // U+0071 (q)
+    { 0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00},   // U+0072 (r)
+    { 0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00},   // U+0073 (s)
+    { 0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00},   // U+0074 (t)
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00},   // U+0075 (u)
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},   // U+0076 (v)
+    { 0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00},   // U+0077 (w)
+    { 0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00},   // U+0078 (x)
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F},   // U+0079 (y)
+    { 0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00},   // U+007A (z)
+    { 0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00},   // U+007B ({)
+    { 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00},   // U+007C (|)
+    { 0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00},   // U+007D (})
+    { 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+007E (~)
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}    // U+007F
+};
+
+// void Pixel_Init_Default_Font() {
+//     // extern unsigned char PIXEL_DEFAULT_FONT[256][8] = {};
+//     // PIXEL_DEFAULT_FONT['A'][0] = 0b00011000; //    ██
+//     // PIXEL_DEFAULT_FONT['A'][1] = 0b00100100; //   █  █
+//     // PIXEL_DEFAULT_FONT['A'][2] = 0b01000010; //  █    █
+//     // PIXEL_DEFAULT_FONT['A'][3] = 0b01111110; //  ██████
+//     // PIXEL_DEFAULT_FONT['A'][4] = 0b01000010; //  █    █
+//     // PIXEL_DEFAULT_FONT['A'][5] = 0b01000010; //  █    █
+//     // PIXEL_DEFAULT_FONT['A'][6] = 0b01000010; //  █    █
+//     // PIXEL_DEFAULT_FONT['A'][7] = 0b00000000; // (baseline/spacing)
+
+// }
+
+int writeformatted(char* buffer, int bufferSize, const char *format, ...)
+{
+    int len = 0;
+    va_list arguments;
+    va_start(arguments, format);
+    len = vsnprintf(buffer, bufferSize, format, arguments);
+    va_end(arguments);
+    return len;
+}
+
+
+void Pixel_PutChar(PixelContext* ctx, const char c, int cx, int cy, const unsigned char font[128][8], Color color, int scale) {
+    if (scale <= 0) scale = 1;
+    const unsigned char* glyph = font[(unsigned char)c];
+    int y = cy;
+    for(int i = 0; i < 8; i++) {
+        const unsigned char row = glyph[i];
+        int x = cx;
+        for(int j = 0; j < 8; j++) {
+            if((row >> j) & 1) {
+                Pixel_DrawFilledRectangle(ctx, x, y, scale, scale, color);
+            }
+            x += scale;
+        }
+        y += scale;
+    }
+}
+
+void Pixel_PutText(PixelContext* ctx, int tx, int ty, const unsigned char font[128][8], Color color, int scale, const char* format, ...) {
+
+    if(!format || !font) return;
+
+    int max_text_size = 1024;
+    char text[1024];
+
+    int len = 0;
+    va_list arguments;
+    va_start(arguments, format);
+    len = vsnprintf(text, max_text_size, format, arguments);
+    va_end(arguments);
+
+    if (scale <= 0) scale = 1;
+
+    int cx = tx;
+    int cy = ty;
+    int char_size = 8 * scale;
+    int padding_x = scale == 1 ? 0 : (int)(0.5 * scale);
+    int padding_y = 2 * scale;
+
+    int i = 0;
+    while (i < len) {
+        if(text[i] == '\n') {
+            cy += (char_size + padding_y);
+            cx = tx;
+            i++;
+            continue;
+        }
+
+        Pixel_PutChar(ctx, text[i], cx, cy, font, color, scale);
+        cx += (char_size + padding_x);
+        i++;
+    }
+}
+
+/* --- End pixel_font.cpp --- */
+
+/* --- Begin pixel_loader.cpp --- */
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+// Temporary structures used only during parsing
+typedef struct {
+    float x, y, z;
+} TempVec3;
+
+typedef struct {
+    float x, y;
+} TempVec2;
+
+typedef struct {
+    int v_idx;
+    int vt_idx;
+    int vn_idx;
+} ObjIndex;
+
+PixelMesh Pixel_LoadObjMesh(const char *file_name) {
+    FILE *file = fopen(file_name, "r");
+    if (!file) {
+        printf("[Error] Failed to open OBJ file: %s\n", file_name);
+        return (PixelMesh){nullptr, nullptr, 0, 0, nullptr, false};
+    }
+
+    std::vector<TempVec3> temp_positions;
+    std::vector<TempVec2> temp_texcoords;
+    std::vector<TempVec3> temp_normals;
+
+    // We'll store parsed faces as lists of indices
+    // To handle arbitrary polygons (quads, etc.), we can triangulate them on the fly
+    std::vector<PixelVertex> loaded_vertices;
+    std::vector<PixelTriangle> loaded_triangles;
+
+    char line_header[128];
+    while (fscanf(file, "%s", line_header) != EOF) {
+        if (strcmp(line_header, "v") == 0) {
+            TempVec3 v;
+            fscanf(file, "%f %f %f\n", &v.x, &v.y, &v.z);
+            temp_positions.push_back(v);
+        } else if (strcmp(line_header, "vt") == 0) {
+            TempVec2 vt;
+            fscanf(file, "%f %f\n", &vt.x, &vt.y);
+            // Invert V coordinate if your renderer/texture space expects top-left origin (standard for many software renderers)
+            vt.y = 1.0f - vt.y;
+            temp_texcoords.push_back(vt);
+        } else if (strcmp(line_header, "vn") == 0) {
+            TempVec3 vn;
+            fscanf(file, "%f %f %f\n", &vn.x, &vn.y, &vn.z);
+            temp_normals.push_back(vn);
+        } else if (strcmp(line_header, "f") == 0) {
+            char line_buffer[1024];
+            if (!fgets(line_buffer, sizeof(line_buffer), file)) break;
+
+            ObjIndex face_indices[4];
+            int vertex_count = 0;
+
+            // Parse face elements (can be v, v//vn, v/vt/vn, or v/vt)
+            char *token = strtok(line_buffer, " \t\r\n");
+            while (token != NULL && vertex_count < 4) {
+                ObjIndex idx = {0, 0, 0};
+
+                if (strstr(token, "//")) {
+                    // Format: v//vn
+                    sscanf(token, "%d//%d", &idx.v_idx, &idx.vn_idx);
+                } else if (sscanf(token, "%d/%d/%d", &idx.v_idx, &idx.vt_idx, &idx.vn_idx) == 3) {
+                    // Format: v/vt/vn
+                } else if (sscanf(token, "%d/%d", &idx.v_idx, &idx.vt_idx) == 2) {
+                    // Format: v/vt
+                } else {
+                    // Format: v
+                    sscanf(token, "%d", &idx.v_idx);
+                }
+
+                // Handle relative indexing (negative indices in OBJ)
+                if (idx.v_idx < 0) idx.v_idx = (int)temp_positions.size() + idx.v_idx + 1;
+                if (idx.vt_idx < 0) idx.vt_idx = (int)temp_texcoords.size() + idx.vt_idx + 1;
+                if (idx.vn_idx < 0) idx.vn_idx = (int)temp_normals.size() + idx.vn_idx + 1;
+
+                face_indices[vertex_count++] = idx;
+                token = strtok(NULL, " \t\r\n");
+            }
+
+            // Helper lambda/block to push a vertex into our final mesh buffers,
+            // avoiding exact duplicates or simply creating a direct stream.
+            // Here we map unique attribute combinations into PixelVertex array.
+            auto get_or_create_vertex = [&](ObjIndex idx) -> int {
+                PixelVertex new_vert;
+
+                // Position
+                if (idx.v_idx > 0 && idx.v_idx <= (int)temp_positions.size()) {
+                    TempVec3 p = temp_positions[idx.v_idx - 1];
+                    new_vert.coordinate = {p.x, p.y, p.z};
+                } else {
+                    new_vert.coordinate = {0, 0, 0};
+                }
+
+                // Normal
+                if (idx.vn_idx > 0 && idx.vn_idx <= (int)temp_normals.size()) {
+                    TempVec3 n = temp_normals[idx.vn_idx - 1];
+                    new_vert.normal = {n.x, n.y, n.z};
+                } else {
+                    new_vert.normal = {0, 1, 0}; // Default upward normal
+                }
+
+                // Texture Coordinates
+                if (idx.vt_idx > 0 && idx.vt_idx <= (int)temp_texcoords.size()) {
+                    TempVec2 t = temp_texcoords[idx.vt_idx - 1];
+                    new_vert.uv = {t.x, t.y};
+                } else {
+                    new_vert.uv = {0, 0};
+                }
+
+                // Default vertex base color (White, tinted by material later)
+                new_vert.color = WHITE;
+
+                loaded_vertices.push_back(new_vert);
+                return (int)loaded_vertices.size() - 1;
+            };
+
+            // Triangulate the face (supports triangles and simple quads)
+            if (vertex_count >= 3) {
+                int i0 = get_or_create_vertex(face_indices[0]);
+                int i1 = get_or_create_vertex(face_indices[1]);
+                int i2 = get_or_create_vertex(face_indices[2]);
+                loaded_triangles.push_back((PixelTriangle){{i0, i1, i2}, 0});
+
+                if (vertex_count == 4) {
+                    // Quad split into second triangle (0 -> 2 -> 3)
+                    int i3 = get_or_create_vertex(face_indices[3]);
+                    loaded_triangles.push_back((PixelTriangle){{i0, i2, i3}, 0});
+                }
+            }
+        }
+    }
+
+    fclose(file);
+
+    // Allocate final C-style arrays required by PixelMesh structure
+    PixelMesh mesh;
+    mesh.vertex_count = (int)loaded_vertices.size();
+    mesh.triangle_count = (int)loaded_triangles.size();
+
+    mesh.vertices = (PixelVertex *)malloc(mesh.vertex_count * sizeof(PixelVertex));
+    mesh.triangles = (PixelTriangle *)malloc(mesh.triangle_count * sizeof(PixelTriangle));
+
+    memcpy(mesh.vertices, loaded_vertices.data(), mesh.vertex_count * sizeof(PixelVertex));
+    memcpy(mesh.triangles, loaded_triangles.data(), mesh.triangle_count * sizeof(PixelTriangle));
+
+    mesh.texture = nullptr;
+    mesh.has_texture = false;
+
+    printf("[Success] Loaded OBJ mesh: %s (%d vertices, %d triangles)\n", file_name, mesh.vertex_count, mesh.triangle_count);
+    return mesh;
+}
+
+/* --- End pixel_loader.cpp --- */
 
 /* --- Begin pixel_math.cpp --- */
 
@@ -1110,6 +1523,7 @@ Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix) {
 /* --- Begin pixel_primitives.cpp --- */
 
 #include <cmath>
+#include <cstdint>
 
 // -----------------------------------------------------------------
 // Primitive Shapes Drawing Methods
@@ -1313,6 +1727,20 @@ void Pixel_DrawFilledRectangle(PixelContext *ctx, int x0, int y0,
   }
 }
 
+void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0,
+                               uint32_t width, uint32_t height, PixelTexture *texture) {
+    for(uint32_t dy = 0;dy < height; ++dy) {
+        for(uint32_t dx = 0; dx < width; ++dx) {
+            uint32_t x = x0 + dx;
+            uint32_t y = y0 + dy;
+            float u = (float)dx/(float)width;
+            float v = (float)dy/(float)height;
+            uint32_t color = Pixel_Color2Uint32(Pixel_SampleTexture(texture, u, v, ctx->filter_mode));
+            Pixel_PutPixel(ctx, x, y, color);
+        }
+    }
+}
+
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
                              int x2, int y2, Color color) {
   Pixel_DrawLine(ctx, x0, y0, x1, y1, color);
@@ -1430,10 +1858,75 @@ float Pixel_TimerElapsedMs(PixelTimer* timer) {
 // -----------------------------------------------------------------
 // 3D Rendering Related stuff (Vertex, Mesh, etc.)
 // -----------------------------------------------------------------
-Color Pixel_SampleTexture(PixelTexture *texture, float x, float y) {
-    return WHITE;
+static Color Pixel_SampleTextureNearest(PixelTexture *texture, float x, float y) {
+    // int tex_x = (int)(texture->width * x);
+    // int tex_y = (int)(texture->height * y);
+    // return Pixel_Uint322Color(texture->pixels[tex_x * texture->width + tex_y]);
+    if(!texture || !texture->pixels)
+            return WHITE;
+
+    x = Pixel_Max(0.0f, Pixel_Min(1.0f, x));
+    y = Pixel_Max(0.0f, Pixel_Min(1.0f, y));
+
+    int u = (int)(x * (texture->width  - 1));
+    int v = (int)(y * (texture->height - 1));
+
+    return Pixel_Uint322Color(
+        texture->pixels[v * texture->width + u]
+    );
 }
 
+static Color Pixel_SampleTextureBiLinear(PixelTexture *texture, float x, float y) {
+    if(!texture || !texture->pixels) return WHITE;
+    x = Pixel_Max(0.0f, Pixel_Min(1.0f, x));
+    y = Pixel_Max(0.0f, Pixel_Min(1.0f, y));
+
+    float u = x * (texture->width - 1);
+    float v = y * (texture->height - 1);
+
+    int int_u = (int)u;
+    int int_v = (int)v;
+    int next_u = (int_u + 1 >= texture->width ? texture->width-1 : int_u + 1);
+    int next_v = (int_v + 1 >= texture->height ? texture->height-1 : int_v + 1);
+
+    float u_ratio = u - (int)u;
+    float v_ratio = v - (int)v;
+
+    Color top_left = Pixel_Uint322Color(texture->pixels[int_v * texture->width + int_u]);
+    Color top_right = Pixel_Uint322Color(texture->pixels[int_v * texture->width + next_u]);
+    Color bottom_right = Pixel_Uint322Color(texture->pixels[next_v * texture->width + next_u]);
+    Color bottom_left = Pixel_Uint322Color(texture->pixels[next_v * texture->width + int_u]);
+
+
+    Color top = {
+        top_right.r * u_ratio + top_left.r * (1-u_ratio),
+        top_right.g * u_ratio + top_left.g * (1-u_ratio),
+        top_right.b * u_ratio + top_left.b * (1-u_ratio),
+        255.0f
+    };
+
+    Color bottom = {
+        bottom_right.r * u_ratio + bottom_left.r * (1-u_ratio),
+        bottom_right.g * u_ratio + bottom_left.g * (1-u_ratio),
+        bottom_right.b * u_ratio + bottom_left.b * (1-u_ratio),
+        255.0f
+    };
+
+    Color color = {
+        top.r * (1-v_ratio) + bottom.r * v_ratio,
+        top.g * (1-v_ratio) + bottom.g * v_ratio,
+        top.b * (1-v_ratio) + bottom.b * v_ratio,
+        255.0f
+    };
+
+    return color;
+}
+
+Color Pixel_SampleTexture(PixelTexture *texture, float x, float y, FilterMode filter_mode) {
+    if(filter_mode == PIXEL_NEAREST) return Pixel_SampleTextureNearest(texture, x, y);
+    else if(filter_mode == PIXEL_BILINEAR) return Pixel_SampleTextureBiLinear(texture, x, y);
+    else return Pixel_SampleTextureBiLinear(texture, x, y);
+}
 
 // Transform world lights to View Space once per frame
 static void Pixel_PrepareLights(const Light *world_lights, Light *view_lights, int light_count, Mat4 view_matrix) {
@@ -1533,8 +2026,30 @@ static PixelBaryWeightDiff Pixel_ComputeBaryWeightDiff(VertexOutput v0, VertexOu
     return  diff;
 }
 
-static void Pixel_InterpolateAttributes(VertexOutput v0, VertexOutput v1, VertexOutput v2, float alpha, float beta, float gamma, PixelInterpolatedAttributes *interpolated_values) {
+static void Pixel_InterpolateAttributes(
+    VertexOutput v0, VertexOutput v1, VertexOutput v2,
+    float alpha, float beta, float gamma,
+    PixelInterpolatedAttributes *interpolated_values
+) {
+    // 1. Calculate the reciprocal of depth (1/W) for each vertex
+    float inv_w0 = v0.inv_w;
+    float inv_w1 = v1.inv_w;
+    float inv_w2 = v2.inv_w;
+
+    // 2. Interpolate the 1/W value for the current pixel
+    float interpolated_inv_w = inv_w0 * alpha + inv_w1 * beta + inv_w2 * gamma;
+
+    // 3. Calculate the actual corrected perspective depth for this pixel
+    float pixel_w = 1.0f / interpolated_inv_w;
+
+    // 4. Correct Screen Position Depth (Z)
     interpolated_values->depth = v0.screen_pos.z * alpha + v1.screen_pos.z * beta + v2.screen_pos.z * gamma;
+
+    // 5. Correct UV coordinates
+    interpolated_values->uv = {
+        ((v0.uv.x * inv_w0) * alpha + (v1.uv.x * inv_w1) * beta + (v2.uv.x * inv_w2) * gamma) * pixel_w,
+        ((v0.uv.y * inv_w0) * alpha + (v1.uv.y * inv_w1) * beta + (v2.uv.y * inv_w2) * gamma) * pixel_w
+    };
 
     interpolated_values->light_color = {
         v0.light_factor.r * alpha + v1.light_factor.r * beta + v2.light_factor.r * gamma,
@@ -1549,17 +2064,13 @@ static void Pixel_InterpolateAttributes(VertexOutput v0, VertexOutput v1, Vertex
         v0.base_color.b * alpha + v1.base_color.b * beta + v2.base_color.b * gamma,
         255.0f
     };
-
-    interpolated_values->uv = {
-        v0.uv.x * alpha + v1.uv.x * beta + v2.uv.x * gamma,
-        v0.uv.y * alpha + v1.uv.y * beta + v2.uv.y * gamma
-    };
 }
+
 
 static uint32_t Pixel_ShadeFragment(PixelContext *ctx, const PixelTexture *texture, bool use_texture, PixelInterpolatedAttributes *interpolated_attr) {
     Color surface_color;
     if (use_texture && texture) {
-        surface_color = Pixel_SampleTexture((PixelTexture*)texture, interpolated_attr->uv.x, interpolated_attr->uv.y);
+        surface_color = Pixel_SampleTexture((PixelTexture*)texture, interpolated_attr->uv.x, interpolated_attr->uv.y, ctx->filter_mode);
     } else {
         surface_color = interpolated_attr->base;
     }
@@ -1574,10 +2085,8 @@ static uint32_t Pixel_ShadeFragment(PixelContext *ctx, const PixelTexture *textu
                           (uint32_t)final_b;
 }
 
-static void Pixel_DrawTriangleGeneric(PixelContext *ctx, VertexOutput v0, VertexOutput v1, VertexOutput v2,
-                               const PixelTexture *texture, bool use_texture, Material material) {
-
-                                   // PixelTimer timer = Pixel_TimerStart();
+static void Pixel_DrawTriangleGeneric(PixelContext *ctx, VertexOutput v0, VertexOutput v1, VertexOutput v2, const PixelTexture *texture, bool use_texture, Material material) {
+    // PixelTimer timer = Pixel_TimerStart();
 
     // Calculate the Triangle Bounding Box
     PixelBoundingBox bounding_box = Pixel_ComputeTriangleBoundingBox(ctx, v0, v1, v2);
@@ -1643,17 +2152,18 @@ static void Pixel_DrawTriangleGeneric(PixelContext *ctx, VertexOutput v0, Vertex
 }
 
 
-static inline Vec3 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height) {
+static inline Vec4 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height) {
     Vec4 clip = Pixel_Mat4MulVec4(mvp, Pixel_Vec3ToVec4(local_pos));
     Vec3 ndc = Pixel_Vec4ToVec3(clip);
-    Vec3 screen;
+    Vec4 screen;
     screen.x = (ndc.x + 1.0f) * 0.5f * (float)width;
     screen.y = (1.0f - ndc.y) * 0.5f * (float)height;
     screen.z = ndc.z;
+    screen.w = clip.w;
     return screen;
 }
 
-static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Mat4 mv_matrix, Mat4 normal_matrix, const Light *view_lights, int light_count, Material material, PixelVertex raw) {
+static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Mat4 mv_matrix, Mat4 normal_matrix, const Light *view_lights, int light_count, Material material, PixelVertex raw, float clip_w) {
     // // PixelTimer out_vertex = Pixel_TimerStart();
     VertexOutput out = {0};
     out.screen_pos = screen_pos;
@@ -1662,99 +2172,17 @@ static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Mat4 mv_ma
     out.light_factor = Pixel_CalculateVertexLighting(out.view_pos, out.view_normal, view_lights, light_count, material);
     out.uv = raw.uv;
     out.base_color = raw.color;
+    out.clip_w = clip_w;
+    out.inv_w = 1.0f/clip_w;
     // // printf("[Single Out Vertex Calculation]: %f\n", Pixel_TimerElapsedMs(&out_vertex));
     return out;
 }
-
-// static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransform transform,
-//                            Mat4 view_matrix, Mat4 projection_matrix,
-//                            const Light *view_lights, int light_count, Material material) {
-
-//     if (!ctx || !mesh || !mesh->vertices || !mesh->triangles) return;
-
-//     // PixelTimer timer = Pixel_TimerStart();
-
-//     // 1. Compute Transformation Matrices
-//     Mat4 scale_mat = Pixel_Mat4ScaleMatrix((Vec3){transform.scale, transform.scale, transform.scale});
-//     Mat4 rot_mat = Pixel_Mat4RotationMatrixXYZ(transform.rotation);
-//     Mat4 trans_mat = Pixel_Mat4TranslationMatrix(transform.position);
-//     Mat4 model_matrix = Pixel_Mat4Mul(trans_mat, Pixel_Mat4Mul(rot_mat, scale_mat));
-
-//     Mat4 mv_matrix = Pixel_Mat4Mul(view_matrix, model_matrix);
-//     Mat4 mvp = Pixel_Mat4Mul(projection_matrix, mv_matrix);
-//     Mat4 normal_matrix = Pixel_ComputeNormalMatrix(mv_matrix);
-
-//     for (int i = 0; i < mesh->triangle_count; i++) {
-//         PixelTriangle tri = mesh->triangles[i];
-//         PixelVertex raw_v0 = mesh->vertices[tri.vertices[0]];
-//         PixelVertex raw_v1 = mesh->vertices[tri.vertices[1]];
-//         PixelVertex raw_v2 = mesh->vertices[tri.vertices[2]];
-
-//         // Backface Culling Check (Using Screen Space Area)
-//         Vec3 s0 = TransformVertexToScreen(raw_v0.coordinate, mvp, ctx->width, ctx->height);
-//         Vec3 s1 = TransformVertexToScreen(raw_v1.coordinate, mvp, ctx->width, ctx->height);
-//         Vec3 s2 = TransformVertexToScreen(raw_v2.coordinate, mvp, ctx->width, ctx->height);
-
-//         float area = (s1.x - s0.x) * (s2.y - s0.y) - (s1.y - s0.y) * (s2.x - s0.x);
-//         if (ctx->cull_backface && area >= 0.0f) continue; // Counter-clockwise front-face culling
-
-//         // ctx->benchmark.drawn_traingle_count++;
-
-//         switch (ctx->drawing_mode) {
-//             case PIXEL_VERTEX: {
-//                 // Draw only the vertices as points or small markers
-//                 Pixel_PutPixel(ctx, (uint32_t)s0.x, (uint32_t)s0.y, Pixel_Color2Uint32(raw_v0.color));
-//                 Pixel_PutPixel(ctx, (uint32_t)s1.x, (uint32_t)s1.y, Pixel_Color2Uint32(raw_v1.color));
-//                 Pixel_PutPixel(ctx, (uint32_t)s2.x, (uint32_t)s2.y, Pixel_Color2Uint32(raw_v2.color));
-//                 break;
-//             }
-//             case PIXEL_WIREFRAME: {
-//                 // Draw lines connecting the triangle vertices
-//                 Pixel_DrawLine(ctx, (uint32_t)s0.x, (uint32_t)s0.y, (uint32_t)s1.x, (uint32_t)s1.y, raw_v0.color);
-//                 Pixel_DrawLine(ctx, (uint32_t)s1.x, (uint32_t)s1.y, (uint32_t)s2.x, (uint32_t)s2.y, raw_v1.color);
-//                 Pixel_DrawLine(ctx, (uint32_t)s2.x, (uint32_t)s2.y, (uint32_t)s0.x, (uint32_t)s0.y, raw_v2.color);
-//                 break;
-//             }
-//             case PIXEL_SOLID: {
-//                 // PixelTimer out_timer = Pixel_TimerStart();
-//                 // Draw solid flat colors ignoring lighting calculations
-//                 VertexOutput out0, out1, out2;
-//                 out0.screen_pos = s0; out0.base_color = raw_v0.color; out0.light_factor = (Color){1,1,1,1}; out0.uv = raw_v0.uv;
-//                 out1.screen_pos = s1; out1.base_color = raw_v1.color; out1.light_factor = (Color){1,1,1,1}; out1.uv = raw_v1.uv;
-//                 out2.screen_pos = s2; out2.base_color = raw_v2.color; out2.light_factor = (Color){1,1,1,1}; out2.uv = raw_v2.uv;
-//                 // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
-//                 // Pass base color with lighting factor forced to 1.0 (no shading)
-//                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
-//                 break;
-//             }
-//             case PIXEL_RENDER:
-//             default: {
-//                 // PixelTimer out_timer = Pixel_TimerStart();
-//                 // Full rendering mode with lighting, textures, and material attributes enabled
-//                 VertexOutput out0 = Pixel_ComputeVertexOutput(s0, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v0);
-//                 VertexOutput out1 = Pixel_ComputeVertexOutput(s1, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v1);
-//                 VertexOutput out2 = Pixel_ComputeVertexOutput(s2, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v2);
-
-//                 // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
-
-//                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
-
-//                 break;
-//             }
-//         }
-//     }
-
-//     // ctx->benchmark.mesh_rendering += Pixel_TimerElapsedMs(&timer);
-//     // // printf("[Mesh]: %f\n", Pixel_TimerElapsedMs(&timer));
-// }
 
 static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransform transform,
                            Mat4 view_matrix, Mat4 projection_matrix,
                            const Light *view_lights, int light_count, Material material) {
 
     if (!ctx || !mesh || !mesh->vertices || !mesh->triangles) return;
-
-    // PixelTimer timer = Pixel_TimerStart();
 
     // 1. Compute Transformation Matrices
     Mat4 scale_mat = Pixel_Mat4ScaleMatrix((Vec3){transform.scale, transform.scale, transform.scale});
@@ -1766,50 +2194,48 @@ static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransf
     Mat4 mvp = Pixel_Mat4Mul(projection_matrix, mv_matrix);
     Mat4 normal_matrix = Pixel_ComputeNormalMatrix(mv_matrix);
 
-    // =========================================================================
-    // PHASE 1: Ensure buffer capacity and precompute all vertex outputs
-    // =========================================================================
+    // Ensure vertex output buffer capacity
     if (ctx->out_vertices_capacity < mesh->vertex_count) {
         ctx->out_vertices_capacity = mesh->vertex_count;
         ctx->out_vertices = (VertexOutput*)realloc(ctx->out_vertices, ctx->out_vertices_capacity * sizeof(VertexOutput));
     }
 
-    // PixelTimer out_timer = Pixel_TimerStart();
+    // =========================================================================
+    // PHASE 1: Precompute all vertex outputs in a single clean loop
+    // =========================================================================
     for (int i = 0; i < mesh->vertex_count; i++) {
         PixelVertex raw_v = mesh->vertices[i];
-        Vec3 screen_pos = TransformVertexToScreen(raw_v.coordinate, mvp, ctx->width, ctx->height);
+        Vec4 screen_pos_w = TransformVertexToScreen(raw_v.coordinate, mvp, ctx->width, ctx->height);
+        Vec3 screen_pos = {screen_pos_w.x, screen_pos_w.y, screen_pos_w.z};
 
-        if (ctx->drawing_mode == PIXEL_SOLID) {
+        if ((ctx->drawing_mode == PIXEL_RENDER || ctx->drawing_mode == PIXEL_SOLID) && ctx->enable_lighting) {
+            ctx->out_vertices[i] = Pixel_ComputeVertexOutput(screen_pos, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v, screen_pos_w.w);
+        } else {
             VertexOutput out;
             out.screen_pos = screen_pos;
             out.base_color = raw_v.color;
-            out.light_factor = (Color){1, 1, 1, 1};
+            out.light_factor = (Color){1.0f, 1.0f, 1.0f, 1.0f}; // Full brightness / no shading fallback
             out.uv = raw_v.uv;
+            out.clip_w = screen_pos_w.w;
+            out.inv_w = (screen_pos_w.w != 0.0f) ? (1.0f / screen_pos_w.w) : 1.0f;
             ctx->out_vertices[i] = out;
-        } else if (ctx->drawing_mode == PIXEL_RENDER) {
-            ctx->out_vertices[i] = Pixel_ComputeVertexOutput(screen_pos, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v);
         }
     }
-    // ctx->benchmark.vertex_out_with_lighting += Pixel_TimerElapsedMs(&out_timer);
 
     // =========================================================================
     // PHASE 2: Triangle Traversal, Culling, and Drawing Dispatch
     // =========================================================================
     for (int i = 0; i < mesh->triangle_count; i++) {
         PixelTriangle tri = mesh->triangles[i];
-
-        // Fetch precomputed vertex outputs using indices
         VertexOutput out0 = ctx->out_vertices[tri.vertices[0]];
         VertexOutput out1 = ctx->out_vertices[tri.vertices[1]];
         VertexOutput out2 = ctx->out_vertices[tri.vertices[2]];
 
-        // Backface Culling Check (Using Screen Space Area from precomputed positions)
+        // Backface Culling Check
         float area = (out1.screen_pos.x - out0.screen_pos.x) * (out2.screen_pos.y - out0.screen_pos.y) -
                      (out1.screen_pos.y - out0.screen_pos.y) * (out2.screen_pos.x - out0.screen_pos.x);
 
-        if (ctx->cull_backface && area >= 0.0f) continue; // Counter-clockwise front-face culling
-
-        // ctx->benchmark.drawn_traingle_count++;
+        if (ctx->cull_backface && area >= 0.0f) continue;
 
         switch (ctx->drawing_mode) {
             case PIXEL_VERTEX: {
@@ -1824,16 +2250,20 @@ static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransf
                 Pixel_DrawLine(ctx, (uint32_t)out2.screen_pos.x, (uint32_t)out2.screen_pos.y, (uint32_t)out0.screen_pos.x, (uint32_t)out0.screen_pos.y, out2.base_color);
                 break;
             }
-            case PIXEL_SOLID:
+            case PIXEL_SOLID: {
+                // Draws material color only (ignores textures)
+                Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, NULL, false, material);
+                break;
+            }
             case PIXEL_RENDER:
             default: {
-                Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, mesh->has_texture, material);
+                // Renders texture if available, falls back to material if texture is NULL/false
+                bool use_tex = mesh->has_texture && (mesh->texture != NULL);
+                Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, use_tex, material);
                 break;
             }
         }
     }
-
-    // ctx->benchmark.mesh_rendering += Pixel_TimerElapsedMs(&timer);
 }
 
 void Pixel_RenderScene(PixelContext *ctx, const PixelScene *scene, Mat4 view, Mat4 projection) {

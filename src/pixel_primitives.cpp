@@ -1,6 +1,8 @@
 #include "pixel.h"
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 // -----------------------------------------------------------------
 // Primitive Shapes Drawing Methods
@@ -160,25 +162,21 @@ void Pixel_DrawScanLine(PixelContext *ctx, int start_x, int end_x, int y,
   }
 }
 
-void Pixel_DrawFilledCircle(PixelContext *ctx, int xc, int yc, int r,
-                            Color color) {
-  int x = 0;
-  int y = r;
-  int p = 1 - r;
-
-  while (x <= y) {
-    Pixel_DrawScanLine(ctx, xc - x, xc + x, yc + y, color);
-    Pixel_DrawScanLine(ctx, xc - y, xc + y, yc + x, color);
-    Pixel_DrawScanLine(ctx, xc - x, xc + x, yc - y, color);
-    Pixel_DrawScanLine(ctx, xc - y, xc + y, yc - x, color);
-    x++;
-    if (p < 0) {
-      p += 2 * x + 1;
-    } else {
-      y--;
-      p += 2 * (x - y) + 1;
+void Pixel_DrawFilledCircle(PixelContext *ctx, int xc, int yc, int r, Color color) {
+    int x_min = Pixel_Max(0, xc - r);
+    int x_max = Pixel_Min(ctx->width, xc + r);
+    int y_min = Pixel_Max(0, yc - r);
+    int y_max = Pixel_Min(ctx->height, yc + r);
+    uint32_t fill_color = Pixel_Color2Uint32(color);
+    for(int i=y_min; i<=y_max; ++i) {
+        int dy = yc - i;
+        for(int j=x_min; j<=x_max; ++j) {
+            int dx = xc - j;
+            if(dx * dx + dy * dy <= r * r) {
+                Pixel_PutPixel(ctx, j, i, fill_color);
+            }
+        }
     }
-  }
 }
 
 void Pixel_DrawFilledCircleV(PixelContext *ctx, Vec3 center, int r,
@@ -289,6 +287,60 @@ void Pixel_DrawTriangleShaded(PixelContext *ctx, int x0, int y0, int x1, int y1,
     w1_row += delta_w1_row;
     w2_row += delta_w2_row;
   }
+}
+
+void Pixel_DrawTriangleTexture(PixelContext *ctx, int x0, int y0, int x1, int y1,int x2, int y2, PixelTexture *texture, float u0, float v0, float u1, float v1, float u2, float v2, FilterMode filter_mode) {
+    if(!texture) {
+        fprintf(stderr, "[Pixel]Texture can't be NULL.");
+        exit(1);
+    }
+
+    Vec3 t_v0 = {(float)x0, (float)y0, 0};
+    Vec3 t_v1 = {(float)x1, (float)y1, 0};
+    Vec3 t_v2 = {(float)x2, (float)y2, 0};
+
+    int x_min = Pixel_Min(Pixel_Min(x0, x1), x2);
+    int x_max = Pixel_Max(Pixel_Max(x0, x1), x2);
+    int y_min = Pixel_Min(Pixel_Min(y0, y1), y2);
+    int y_max = Pixel_Max(Pixel_Max(y0, y1), y2);
+
+    float delta_w0_col = t_v1.y - t_v2.y;
+    float delta_w1_col = t_v2.y - t_v0.y;
+    float delta_w2_col = t_v0.y - t_v1.y;
+
+    float delta_w0_row = t_v2.x - t_v1.x;
+    float delta_w1_row = t_v0.x - t_v2.x;
+    float delta_w2_row = t_v1.x - t_v0.x;
+
+    float triangle_area = Pixel_Vec3EdgeCross(t_v0, t_v1, t_v2);
+    Vec3 p0 = {(float)x_min, (float)y_min, 0};
+    float w0_row = Pixel_Vec3EdgeCross(t_v1, t_v2, p0);
+    float w1_row = Pixel_Vec3EdgeCross(t_v2, t_v0, p0);
+    float w2_row = Pixel_Vec3EdgeCross(t_v0, t_v1, p0);
+
+    for (int y = y_min; y <= y_max; ++y) {
+      float w0 = w0_row;
+      float w1 = w1_row;
+      float w2 = w2_row;
+      for (int x = x_min; x <= x_max; ++x) {
+        float alpha = w0 / triangle_area;
+        float beta = w1 / triangle_area;
+        float gamma = w2 / triangle_area;
+
+        if ((w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0)) {
+          float u = u0 * alpha + u1 * beta + u2 * gamma;
+          float v = v0 * alpha + v1 * beta + v2 * gamma;
+          uint32_t fill_color = Pixel_Color2Uint32(Pixel_SampleTexture(texture, u, v, filter_mode));
+          Pixel_PutPixel(ctx, x, y, fill_color);
+        }
+        w0 += delta_w0_col;
+        w1 += delta_w1_col;
+        w2 += delta_w2_col;
+      }
+      w0_row += delta_w0_row;
+      w1_row += delta_w1_row;
+      w2_row += delta_w2_row;
+    }
 }
 
 
