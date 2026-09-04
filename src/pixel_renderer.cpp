@@ -318,8 +318,24 @@ static void Pixel_DrawTriangleGeneric(PixelContext *ctx, VertexOutput v0, Vertex
     // // // printf("[Triangle Render]: %f\n", Pixel_TimerElapsedMs(&traingle_timer));
 }
 
+static inline bool Pixel_TriangleCulledByFrustum(Vec4 c0, Vec4 c1, Vec4 c2) {
+    // Left plane (x >= -w)
+    if (c0.x + c0.w < 0.0f && c1.x + c1.w < 0.0f && c2.x + c2.w < 0.0f) return true;
+    // Right plane (x <= w)
+    if (c0.w - c0.x < 0.0f && c1.w - c1.x < 0.0f && c2.w - c2.x < 0.0f) return true;
+    // Bottom plane (y >= -w)
+    if (c0.y + c0.w < 0.0f && c1.y + c1.w < 0.0f && c2.y + c2.w < 0.0f) return true;
+    // Top plane (y <= w)
+    if (c0.w - c0.y < 0.0f && c1.w - c1.y < 0.0f && c2.w - c2.y < 0.0f) return true;
+    // Near plane (z >= 0)
+    if (c0.z < 0.0f && c1.z < 0.0f && c2.z < 0.0f) return true;
+    // Far plane (z <= w)
+    if (c0.w - c0.z < 0.0f && c1.w - c1.z < 0.0f && c2.w - c2.z < 0.0f) return true;
 
-static inline Vec4 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height) {
+    return false;
+}
+
+static inline Vec4 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, int height, Vec3 *out_screen) {
     Vec4 clip = Pixel_Mat4MulVec4(mvp, Pixel_Vec3ToVec4(local_pos));
     Vec3 ndc = Pixel_Vec4ToVec3(clip);
     Vec4 screen;
@@ -327,21 +343,25 @@ static inline Vec4 TransformVertexToScreen(Vec3 local_pos, Mat4 mvp, int width, 
     screen.y = (1.0f - ndc.y) * 0.5f * (float)height;
     screen.z = ndc.z;
     screen.w = clip.w;
-    return screen;
+    if (out_screen) {
+        out_screen->x = screen.x;
+        out_screen->y = screen.y;
+        out_screen->z = screen.z;
+    }
+    return clip;
 }
 
-static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Mat4 mv_matrix, Mat4 normal_matrix, const Light *view_lights, int light_count, Material material, PixelVertex raw, float clip_w) {
-    // // PixelTimer out_vertex = Pixel_TimerStart();
+static inline VertexOutput Pixel_ComputeVertexOutput(Vec3 screen_pos, Vec4 clip_pos, Mat4 mv_matrix, Mat4 normal_matrix, const Light *view_lights, int light_count, Material material, PixelVertex raw) {
     VertexOutput out = {0};
     out.screen_pos = screen_pos;
+    out.clip_pos = clip_pos;
     out.view_pos = Pixel_Vec4ToVec3(Pixel_Mat4MulVec4(mv_matrix, Pixel_Vec3ToVec4(raw.coordinate)));
     out.view_normal = Pixel_Vec4ToVec3(Pixel_Mat4MulVec4(normal_matrix, Pixel_Vec3ToVec4(raw.normal)));
     out.light_factor = Pixel_CalculateVertexLighting(out.view_pos, out.view_normal, view_lights, light_count, material);
     out.uv = raw.uv;
     out.base_color = raw.color;
-    out.clip_w = clip_w;
-    out.inv_w = 1.0f/clip_w;
-    // // printf("[Single Out Vertex Calculation]: %f\n", Pixel_TimerElapsedMs(&out_vertex));
+    out.clip_w = clip_pos.w;
+    out.inv_w = 1.0f / clip_pos.w;
     return out;
 }
 
@@ -368,29 +388,30 @@ static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransf
     }
 
     // =========================================================================
-    // PHASE 1: Precompute all vertex outputs in a single clean loop
+    // PHASE 1: Precompute vertex screen positions and clip coordinates
     // =========================================================================
     for (int i = 0; i < mesh->vertex_count; i++) {
         PixelVertex raw_v = mesh->vertices[i];
-        Vec4 screen_pos_w = TransformVertexToScreen(raw_v.coordinate, mvp, ctx->width, ctx->height);
-        Vec3 screen_pos = {screen_pos_w.x, screen_pos_w.y, screen_pos_w.z};
+        Vec3 screen_pos;
+        Vec4 clip_pos = TransformVertexToScreen(raw_v.coordinate, mvp, ctx->width, ctx->height, &screen_pos);
 
         if ((ctx->drawing_mode == PIXEL_RENDER || ctx->drawing_mode == PIXEL_SOLID) && ctx->enable_lighting) {
-            ctx->out_vertices[i] = Pixel_ComputeVertexOutput(screen_pos, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v, screen_pos_w.w);
+            ctx->out_vertices[i] = Pixel_ComputeVertexOutput(screen_pos, clip_pos, mv_matrix, normal_matrix, view_lights, light_count, material, raw_v);
         } else {
             VertexOutput out;
             out.screen_pos = screen_pos;
+            out.clip_pos = clip_pos;
             out.base_color = raw_v.color;
-            out.light_factor = (Color){1.0f, 1.0f, 1.0f, 1.0f}; // Full brightness / no shading fallback
+            out.light_factor = (Color){1.0f, 1.0f, 1.0f, 1.0f};
             out.uv = raw_v.uv;
-            out.clip_w = screen_pos_w.w;
-            out.inv_w = (screen_pos_w.w != 0.0f) ? (1.0f / screen_pos_w.w) : 1.0f;
+            out.clip_w = clip_pos.w;
+            out.inv_w = (clip_pos.w != 0.0f) ? (1.0f / clip_pos.w) : 1.0f;
             ctx->out_vertices[i] = out;
         }
     }
 
     // =========================================================================
-    // PHASE 2: Triangle Traversal, Culling, and Drawing Dispatch
+    // PHASE 2: Triangle Traversal, Frustum Culling, Backface Culling, and Drawing
     // =========================================================================
     for (int i = 0; i < mesh->triangle_count; i++) {
         PixelTriangle tri = mesh->triangles[i];
@@ -398,7 +419,14 @@ static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransf
         VertexOutput out1 = ctx->out_vertices[tri.vertices[1]];
         VertexOutput out2 = ctx->out_vertices[tri.vertices[2]];
 
-        // Backface Culling Check
+        // --- Triangle Frustum Culling Check ---
+        if (ctx->enable_frustum_culling) {
+            if (Pixel_TriangleCulledByFrustum(out0.clip_pos, out1.clip_pos, out2.clip_pos)) {
+                continue;
+            }
+        }
+
+        // --- Backface Culling Check ---
         float area = (out1.screen_pos.x - out0.screen_pos.x) * (out2.screen_pos.y - out0.screen_pos.y) -
                      (out1.screen_pos.y - out0.screen_pos.y) * (out2.screen_pos.x - out0.screen_pos.x);
 
@@ -418,13 +446,11 @@ static void Pixel_DrawMesh(PixelContext *ctx, const PixelMesh *mesh, PixelTransf
                 break;
             }
             case PIXEL_SOLID: {
-                // Draws material color only (ignores textures)
                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, NULL, false, material);
                 break;
             }
             case PIXEL_RENDER:
             default: {
-                // Renders texture if available, falls back to material if texture is NULL/false
                 bool use_tex = mesh->has_texture && (mesh->texture != NULL);
                 Pixel_DrawTriangleGeneric(ctx, out0, out1, out2, mesh->texture, use_tex, material);
                 break;

@@ -126,3 +126,9 @@ void Pixel_SaveBMP(PixelContext *ctx, const char *filename) {
   fclose(f);
   printf("[Pixel] File Save complete.");
 }
+
+void Pixel_SetFrustumCulling(PixelContext *ctx, bool enable) {
+    if (ctx) {
+        ctx->enable_frustum_culling = enable;
+    }
+}

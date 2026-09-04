@@ -161,6 +161,8 @@ uint32_t Pixel_Color2Uint32(const Color color);
 Color Pixel_Uint322Color(const uint32_t color);
 Color Pixel_ColorScale(const Color color, float brightness);
 Color Pixel_ColorBlend(const Color color1, const Color color2, float alpha);
+Color Pixel_AlphaBlend(const Color source, const Color destination);
+uint32_t Pixel_AlphaBlendUint32(const uint32_t source, const uint32_t destination);
 
 
 
@@ -308,6 +310,8 @@ void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
 void Pixel_DrawTriangleShaded(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color0, Color color1,
                               Color color2, float h0, float h1, float h2);
+void Pixel_DrawTriangleTexture(PixelContext *ctx, int x0, int y0, int x1, int y1,
+                              int x2, int y2, PixelTexture *texture, float u0, float v0, float u1, float v1, float u2, float v2, FilterMode filter_mode);
 void Pixel_DrawTriangleFilled(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color);
 void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point2,
@@ -315,6 +319,7 @@ void Pixel_DrawTriangleFilledV(PixelContext *ctx, Vec3 point0, Vec3 point2,
 void Pixel_DrawTriangleDepthColor(PixelContext *ctx, int x0, int y0, int x1, int y1,
                               int x2, int y2, Color color0, Color color1,
                               Color color2, float z0, float z1, float z2);
+
 
 // -----------------------------------------------------------------
 // 3D Rendering Related stuff (Vertex, Mesh, )
@@ -652,6 +657,7 @@ void Pixel_PrintBenchmark(PixelContext* ctx) {
 
 /* --- Begin pixel_color.cpp --- */
 
+#include <cstdint>
 
 // -----------------------------------------------------------------
 // Defining Color related structs and methods
@@ -705,6 +711,52 @@ Color Pixel_ColorBlend(const Color color1, const Color color2, float alpha) {
                Pixel_Lerp(color1.g, color2.g, alpha),
                Pixel_Lerp(color1.b, color2.b, alpha),
                Pixel_Lerp(color1.a, color2.a, alpha)};
+}
+
+Color Pixel_AlphaBlend(const Color source, const Color destination) {
+    if(source.a == 255.0f) return source;
+    if(source.a == 0.0f) return destination;
+
+    Color final_color;
+    float src_alpha = source.a;
+    float dest_alpha = 255.0 - src_alpha;
+
+    final_color.r = ((source.r * src_alpha) + (destination.r * dest_alpha)) / 255.0f;
+    final_color.g = ((source.g * src_alpha) + (destination.g * dest_alpha)) / 255.0f;
+    final_color.b = ((source.b * src_alpha) + (destination.b * dest_alpha)) / 255.0f;
+    final_color.a = 255.0f;
+
+    return final_color;
+}
+
+uint32_t Pixel_AlphaBlendUint32(const uint32_t source, const uint32_t destination) {
+    uint32_t src_a = (source >> 24) & 0xFF;
+    uint32_t src_r = (source >> 16) & 0xFF;
+    uint32_t src_g = (source >> 8) & 0xFF;
+    uint32_t src_b = (source >> 0) & 0xFF;
+
+    if(src_a == 255) return source;
+    if(src_a == 0) return destination;
+
+    uint32_t dest_a = 255 - src_a;
+    uint32_t dest_r = (destination >> 16) & 0xFF;
+    uint32_t dest_g = (destination >> 8) & 0xFF;
+    uint32_t dest_b = (destination >> 0) & 0xFF;
+
+
+    uint32_t res_r = ((src_r * src_a) + (dest_r * dest_a));
+    res_r = (res_r + 1 + (res_r >> 8)) >> 8;
+
+    uint32_t res_g = ((src_g * src_a) + (dest_g * dest_a));
+    res_g = (res_g + 1 + (res_g >> 8)) >> 8;
+
+    uint32_t res_b = ((src_b * src_a) + (dest_b * dest_a));
+    res_b = (res_b + 1 + (res_b >> 8)) >> 8;
+
+    uint32_t res_a = 255;
+
+    return ((uint32_t)res_a << 24) | ((uint32_t)res_r << 16) |
+           ((uint32_t)res_g << 8) | (uint32_t)res_b;
 }
 
 /* --- End pixel_color.cpp --- */
@@ -787,7 +839,8 @@ void Pixel_Clear(PixelContext *ctx, uint32_t color) {
 
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color) {
   if (x < ctx->width && y < ctx->height) {
-    ctx->back_buffer[y * ctx->width + x] = color;
+    // ctx->back_buffer[y * ctx->width + x] = color;
+    ctx->back_buffer[y * ctx->width + x] = Pixel_AlphaBlendUint32(color, ctx->back_buffer[y * ctx->width + x]);
   }
 }
 
@@ -1524,6 +1577,8 @@ Mat4 Pixel_ComputeNormalMatrix(Mat4 mv_matrix) {
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 // -----------------------------------------------------------------
 // Primitive Shapes Drawing Methods
@@ -1683,25 +1738,21 @@ void Pixel_DrawScanLine(PixelContext *ctx, int start_x, int end_x, int y,
   }
 }
 
-void Pixel_DrawFilledCircle(PixelContext *ctx, int xc, int yc, int r,
-                            Color color) {
-  int x = 0;
-  int y = r;
-  int p = 1 - r;
-
-  while (x <= y) {
-    Pixel_DrawScanLine(ctx, xc - x, xc + x, yc + y, color);
-    Pixel_DrawScanLine(ctx, xc - y, xc + y, yc + x, color);
-    Pixel_DrawScanLine(ctx, xc - x, xc + x, yc - y, color);
-    Pixel_DrawScanLine(ctx, xc - y, xc + y, yc - x, color);
-    x++;
-    if (p < 0) {
-      p += 2 * x + 1;
-    } else {
-      y--;
-      p += 2 * (x - y) + 1;
+void Pixel_DrawFilledCircle(PixelContext *ctx, int xc, int yc, int r, Color color) {
+    int x_min = Pixel_Max(0, xc - r);
+    int x_max = Pixel_Min(ctx->width, xc + r);
+    int y_min = Pixel_Max(0, yc - r);
+    int y_max = Pixel_Min(ctx->height, yc + r);
+    uint32_t fill_color = Pixel_Color2Uint32(color);
+    for(int i=y_min; i<=y_max; ++i) {
+        int dy = yc - i;
+        for(int j=x_min; j<=x_max; ++j) {
+            int dx = xc - j;
+            if(dx * dx + dy * dy <= r * r) {
+                Pixel_PutPixel(ctx, j, i, fill_color);
+            }
+        }
     }
-  }
 }
 
 void Pixel_DrawFilledCircleV(PixelContext *ctx, Vec3 center, int r,
@@ -1812,6 +1863,60 @@ void Pixel_DrawTriangleShaded(PixelContext *ctx, int x0, int y0, int x1, int y1,
     w1_row += delta_w1_row;
     w2_row += delta_w2_row;
   }
+}
+
+void Pixel_DrawTriangleTexture(PixelContext *ctx, int x0, int y0, int x1, int y1,int x2, int y2, PixelTexture *texture, float u0, float v0, float u1, float v1, float u2, float v2, FilterMode filter_mode) {
+    if(!texture) {
+        fprintf(stderr, "[Pixel]Texture can't be NULL.");
+        exit(1);
+    }
+
+    Vec3 t_v0 = {(float)x0, (float)y0, 0};
+    Vec3 t_v1 = {(float)x1, (float)y1, 0};
+    Vec3 t_v2 = {(float)x2, (float)y2, 0};
+
+    int x_min = Pixel_Min(Pixel_Min(x0, x1), x2);
+    int x_max = Pixel_Max(Pixel_Max(x0, x1), x2);
+    int y_min = Pixel_Min(Pixel_Min(y0, y1), y2);
+    int y_max = Pixel_Max(Pixel_Max(y0, y1), y2);
+
+    float delta_w0_col = t_v1.y - t_v2.y;
+    float delta_w1_col = t_v2.y - t_v0.y;
+    float delta_w2_col = t_v0.y - t_v1.y;
+
+    float delta_w0_row = t_v2.x - t_v1.x;
+    float delta_w1_row = t_v0.x - t_v2.x;
+    float delta_w2_row = t_v1.x - t_v0.x;
+
+    float triangle_area = Pixel_Vec3EdgeCross(t_v0, t_v1, t_v2);
+    Vec3 p0 = {(float)x_min, (float)y_min, 0};
+    float w0_row = Pixel_Vec3EdgeCross(t_v1, t_v2, p0);
+    float w1_row = Pixel_Vec3EdgeCross(t_v2, t_v0, p0);
+    float w2_row = Pixel_Vec3EdgeCross(t_v0, t_v1, p0);
+
+    for (int y = y_min; y <= y_max; ++y) {
+      float w0 = w0_row;
+      float w1 = w1_row;
+      float w2 = w2_row;
+      for (int x = x_min; x <= x_max; ++x) {
+        float alpha = w0 / triangle_area;
+        float beta = w1 / triangle_area;
+        float gamma = w2 / triangle_area;
+
+        if ((w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0)) {
+          float u = u0 * alpha + u1 * beta + u2 * gamma;
+          float v = v0 * alpha + v1 * beta + v2 * gamma;
+          uint32_t fill_color = Pixel_Color2Uint32(Pixel_SampleTexture(texture, u, v, filter_mode));
+          Pixel_PutPixel(ctx, x, y, fill_color);
+        }
+        w0 += delta_w0_col;
+        w1 += delta_w1_col;
+        w2 += delta_w2_col;
+      }
+      w0_row += delta_w0_row;
+      w1_row += delta_w1_row;
+      w2_row += delta_w2_row;
+    }
 }
 
 

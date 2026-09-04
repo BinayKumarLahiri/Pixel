@@ -86,6 +86,7 @@ int main() {
   canvas->drawing_mode = PIXEL_RENDER;
   canvas->cull_backface = true;
   canvas->enable_lighting = true;
+  canvas->enable_frustum_culling = true;
 
   Material shiny_material = {
       {10.0, 10.0, 10.0, 255.0}, // Ambient (slight bluish tint in shadow)
@@ -176,8 +177,8 @@ int main() {
     float frame_time_ms = Pixel_TimerElapsedMs(&frame_timer);
 
     Pixel_PutText(canvas, 10, 10, PIXEL_DEFAULT_FONT, WHITE, 1,
-                  "Model Name: Elve.obj\nVertices Count: 61275\nTriangle "
-                  "Count: 20419\nFPS: %f",
+                  "Model Name: Elve.obj\nVertices Count: %d\nTriangle "
+                  "Count: %d\nFPS: %f", elve.mesh->vertex_count, elve.mesh->triangle_count,
                   (1000.0f / frame_time_ms));
     Pixel_SwapBuffers(canvas);
 

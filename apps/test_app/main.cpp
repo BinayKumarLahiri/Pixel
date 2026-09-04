@@ -53,6 +53,76 @@ uint32_t *load_image_as_argb(const char *filename, int *out_width,
 
   return argb_buffer;
 }
+PixelMesh CreatePlaneMesh(float width, float height, int divs_x, int divs_y) {
+    // 1. Capacity Math:
+    // Number of vertices = (divisions + 1) along each axis because squares share edges.
+    int vertex_count = (divs_x + 1) * (divs_y + 1);
+    // Number of triangles = squares (divs_x * divs_y) * 2 triangles per square.
+    int triangle_count = divs_x * divs_y * 2;
+
+    PixelVertex* vertices = (PixelVertex*)malloc(vertex_count * sizeof(PixelVertex));
+    PixelTriangle* triangles = (PixelTriangle*)malloc(triangle_count * sizeof(PixelTriangle));
+
+    // 2. Vertex Generation Math:
+    int v_idx = 0;
+    for (int y = 0; y <= divs_y; y++) {
+        // v goes from 0.0 to 1.0 across the height divisions
+        float v = (float)y / (float)divs_y;
+        // Map v to [-height/2, height/2] to center the plane at the origin (0,0,0)
+        float z = (v - 0.5f) * height;
+
+        for (int x = 0; x <= divs_x; x++) {
+            // u goes from 0.0 to 1.0 across the width divisions
+            float u = (float)x / (float)divs_x;
+            // Map u to [-width/2, width/2]
+            float px = (u - 0.5f) * width;
+
+            // 3D Position vector in local space
+            Vec3 coord = {px, 0.0f, z};
+
+            // Flat plane facing straight up along the positive Y axis
+            Vec3 normal = {0.0f, 1.0f, 0.0f};
+            Color color = WHITE;
+
+            // UV texture mapping coordinates directly use normalized u, v [0, 1]
+            Vec2 uv = {u, v};
+
+            vertices[v_idx++] = (PixelVertex){coord, normal, color, uv};
+        }
+    }
+
+    // 3. Triangle Index & Winding Order Math:
+    int t_idx = 0;
+    for (int y = 0; y < divs_y; y++) {
+        for (int x = 0; x < divs_x; x++) {
+            // Calculate flat array index offsets for the 4 corners of the current grid square.
+            // Row stride is (divs_x + 1) because there are divs_x squares, meaning divs_x + 1 vertices per row.
+            int i0 = x + y * (divs_x + 1);             // Bottom-Left
+            int i1 = (x + 1) + y * (divs_x + 1);         // Bottom-Right
+            int i2 = x + (y + 1) * (divs_x + 1);         // Top-Left
+            int i3 = (x + 1) + (y + 1) * (divs_x + 1);     // Top-Right
+
+            // Split the square cell into two triangles.
+            // Winding order is kept Counter-Clockwise (i0 -> i2 -> i3 and i0 -> i3 -> i1)
+            // so that surface normals pointing to +Y pass backface culling checks.
+            triangles[t_idx++] = (PixelTriangle){{i0, i2, i3}, 0};
+            triangles[t_idx++] = (PixelTriangle){{i0, i3, i1}, 0};
+        }
+    }
+
+    PixelMesh mesh;
+    mesh.vertices = vertices;
+    mesh.vertex_count = vertex_count;
+    mesh.triangles = triangles;
+    mesh.triangle_count = triangle_count;
+    mesh.texture = NULL;
+    mesh.has_texture = false;
+
+    return mesh;
+}
+float GetTerrainHeight(float x, float z) {
+    return sinf(x * 0.2f) * cosf(z * 0.2f) * 2.0f; // Example rolling hills
+}
 
 int main() {
   uint32_t buffer[WIDTH * HEIGHT];
@@ -61,27 +131,68 @@ int main() {
     std::cout << "Failed to initialize Pixel Context\n";
     return 1;
   }
+  canvas->drawing_mode = PIXEL_WIREFRAME;
+  canvas->cull_backface = true; // Disabled backface culling to ensure visibility from any angle
+  canvas->enable_lighting = false;
 
-  const char *image_path = "C:\\Binary\\Coding\\Projects\\Pixel\\assets\\penguin.jpg";
-  int width = 0;
-  int height = 0;
-  uint32_t *image = load_image_as_argb(image_path, &width, &height);
-  if (!image) {
-    printf("Failed to load texture\n");
-    return 1;
+  // Create a ground plane mesh
+  int divs_x = 40;
+  int divs_y = 40;
+  PixelMesh plane = CreatePlaneMesh(60.0f, 60.0f, divs_x, divs_y);
+
+
+  // PixelMesh plane = CreateCubeMesh();
+  PixelInstance plane_inst;
+  plane_inst.mesh = &plane;
+  plane_inst.material = Material {
+      {50.0f, 50.0f, 50.0f, 255.0f}, // Ambient
+      BLUE,                          // Distinct diffuse color so it's clearly visible
+      WHITE,                         // Specular
+      256.0f                         // Shininess exponent
+  };
+
+  // Position the plane directly within the camera's view frustum (ahead on Z and slightly below on Y)
+  plane_inst.transform.position = (Vec3){0.0f, -5.0f, -20.0f};
+  plane_inst.transform.rotation = (Vec3){0.5f, 0.0f, 0.0f};
+  plane_inst.transform.scale = 1.0f;
+
+  int stride = divs_x + 1;
+  float start_z = 2;
+  for (int y = 0; y <= divs_y; y++) {
+      float start_x = 0;
+      for (int x = 0; x <= divs_x; x++) {
+          int v_idx = x + y * stride;
+
+          float c_x = plane.vertices[v_idx].coordinate.x;
+          float c_z = plane.vertices[v_idx].coordinate.z;
+          plane.vertices[v_idx].coordinate.y = GetTerrainHeight(start_x, start_z);
+          start_x += 1.7;
+      }
+      start_z += 0.5;
   }
-  PixelTexture tex = {image, width, height};
-  printf("Texture Loaded\n\tWidth: %d\n\tHeight: %d\n", tex.width, tex.height);
 
-  Pixel_Clear(canvas, 0xff000000);
+  PixelScene scene;
+  scene.instance_count = 1;
+  scene.instances = &plane_inst;
+  scene.light_count = 0;
+  scene.lights = nullptr;
 
-  Pixel_DrawTriangleShaded(canvas, 300, 10, 10, 590, 590, 590, RED, GREEN, BLUE, 1.0f, 1.0f, 1.0f);
-  Pixel_DrawTriangleTexture(canvas, 300, 10, 10, 590, 590, 590, &tex, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, PIXEL_BILINEAR);
-  Pixel_DrawFilledCircleV(canvas, Vec3{300, 300, 0}, 200.0f, Color{0.0f, 0.0f, 255.0f, 100.0f});
+  // Place the camera at the origin looking down the positive Z axis
+  Mat4 view_matrix =
+      Pixel_Mat4ViewMatrixTRS({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f});
 
+  float fov = 60.0f;
+  float fov_rad = fov * (PIXEL_PI / 180.0f);
+  float aspect = (float)WIDTH / (float)HEIGHT;
+  Mat4 proj_matrix =
+      Pixel_Mat4PerspectiveProjectionMatrix(fov_rad, aspect, 0.1f, 100.0f);
+
+  Pixel_Clear(canvas, 0xff212121); // Dark gray background to provide contrast with the plane
+  Pixel_RenderScene(canvas, &scene, view_matrix, proj_matrix);
+  Pixel_PutText(canvas, 10, 10, PIXEL_DEFAULT_FONT, WHITE, 1, "Vertex Count: %d\nTriangle Count: %d", plane.vertex_count, plane.triangle_count);
   Pixel_SwapBuffers(canvas);
   Pixel_CreateDirectories("./images");
-  Pixel_SaveBMP(canvas, "./images/transparency.bmp");
+  Pixel_SaveBMP(canvas, "./images/large_ground.bmp");
 
   Pixel_Destroy(canvas);
   return 0;

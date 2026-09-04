@@ -192,6 +192,7 @@ typedef struct {
     Vec3 screen_pos;    // Screen space position (x, y, z)
     Vec3 view_pos;      // View space position
     Vec3 view_normal;   // View space normal
+    Vec4 clip_pos;      // Clip space position (x, y, z, w) for frustum culling
     float clip_w;
     float inv_w;
     Color light_factor;  // Pre-calculated lighting accumulation (RGB)
@@ -212,6 +213,7 @@ typedef struct {
   FilterMode filter_mode;
   bool cull_backface;
   bool enable_lighting;
+  bool enable_frustum_culling; // Triangle frustum culling toggle
   Benchmark benchmark;
 
   VertexOutput *out_vertices;
@@ -230,6 +232,7 @@ void Pixel_Clear(PixelContext *ctx, uint32_t color);
 void Pixel_PutPixel(PixelContext *ctx, uint32_t x, uint32_t y, uint32_t color);
 void Pixel_SaveBMP(PixelContext *ctx, const char *filename);
 void Pixel_PrintBenchmark(PixelContext* ctx);
+void Pixel_SetFrustumCulling(PixelContext *ctx, bool enable);
 
 
 // -------------------------------------------------------------------------------
