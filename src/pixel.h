@@ -281,6 +281,7 @@ void Pixel_DrawRectangle(PixelContext *ctx, int x0, int y0, uint32_t width,
 void Pixel_DrawFilledRectangle(PixelContext *ctx, int x0, int y0,
                                uint32_t width, uint32_t height, Color color);
 void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0, uint32_t width, uint32_t height, PixelTexture *texture);
+void Pixel_DrawRectangelTexturePro(PixelContext* ctx, int dx, int dy, uint32_t d_width, uint32_t d_height, int sx, int sy, uint32_t s_width, uint32_t s_height, PixelTexture *texture, FilterMode mode);
 
 // Triangles
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,

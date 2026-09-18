@@ -216,6 +216,26 @@ void Pixel_DrawRectangleTexture(PixelContext *ctx, int x0, int y0,
     }
 }
 
+void Pixel_DrawRectangelTexturePro(PixelContext* ctx, int dx, int dy, uint32_t d_width, uint32_t d_height, int sx, int sy, uint32_t s_width, uint32_t s_height, PixelTexture *texture, FilterMode mode) {
+    if(!texture || sx < 0 || sx >= texture->width || sy < 0 || sy >= texture->height) return;
+    float dsx = (float) sx / texture->width;
+    float dsy = (float) sy / texture->height;
+    float rw = (float)s_width/(float)d_width;
+    float rh = (float)s_height/(float)d_height;
+    float drw = rw / texture->width;
+    float drh = rh / texture->height;
+    for(uint32_t j=0; j<d_height; j++) {
+        for(uint32_t i=0; i<d_width; i++) {
+            uint32_t x = dx + i;
+            uint32_t y = dy + j;
+            float fu = dsx + i * drw;
+            float fv = dsy + j * drh;
+            uint32_t color = Pixel_Color2Uint32(Pixel_SampleTexture(texture, fu, fv, mode));
+            Pixel_PutPixel(ctx, x, y, color);
+        }
+    }
+}
+
 void Pixel_DrawTriangleLines(PixelContext *ctx, int x0, int y0, int x1, int y1,
                              int x2, int y2, Color color) {
   Pixel_DrawLine(ctx, x0, y0, x1, y1, color);

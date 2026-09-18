@@ -69,21 +69,21 @@ static Color Pixel_SampleTextureBiLinear(PixelTexture *texture, float x, float y
         top_right.r * u_ratio + top_left.r * (1-u_ratio),
         top_right.g * u_ratio + top_left.g * (1-u_ratio),
         top_right.b * u_ratio + top_left.b * (1-u_ratio),
-        255.0f
+        top_right.a * u_ratio + top_left.a * (1-u_ratio),
     };
 
     Color bottom = {
         bottom_right.r * u_ratio + bottom_left.r * (1-u_ratio),
         bottom_right.g * u_ratio + bottom_left.g * (1-u_ratio),
         bottom_right.b * u_ratio + bottom_left.b * (1-u_ratio),
-        255.0f
+        bottom_right.a * u_ratio + bottom_left.a * (1-u_ratio),
     };
 
     Color color = {
         top.r * (1-v_ratio) + bottom.r * v_ratio,
         top.g * (1-v_ratio) + bottom.g * v_ratio,
         top.b * (1-v_ratio) + bottom.b * v_ratio,
-        255.0f
+        top.a * (1-v_ratio) + bottom.a * v_ratio,
     };
 
     return color;

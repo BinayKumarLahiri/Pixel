@@ -134,18 +134,6 @@ unsigned char PIXEL_DEFAULT_FONT[128][8] = {
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}    // U+007F
 };
 
-// void Pixel_Init_Default_Font() {
-//     // extern unsigned char PIXEL_DEFAULT_FONT[256][8] = {};
-//     // PIXEL_DEFAULT_FONT['A'][0] = 0b00011000; //    ██
-//     // PIXEL_DEFAULT_FONT['A'][1] = 0b00100100; //   █  █
-//     // PIXEL_DEFAULT_FONT['A'][2] = 0b01000010; //  █    █
-//     // PIXEL_DEFAULT_FONT['A'][3] = 0b01111110; //  ██████
-//     // PIXEL_DEFAULT_FONT['A'][4] = 0b01000010; //  █    █
-//     // PIXEL_DEFAULT_FONT['A'][5] = 0b01000010; //  █    █
-//     // PIXEL_DEFAULT_FONT['A'][6] = 0b01000010; //  █    █
-//     // PIXEL_DEFAULT_FONT['A'][7] = 0b00000000; // (baseline/spacing)
-
-// }
 
 int writeformatted(char* buffer, int bufferSize, const char *format, ...)
 {
